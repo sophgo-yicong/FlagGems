@@ -38,6 +38,7 @@ from .cummax import cummax
 from .cummin import cummin
 from .cumsum import cumsum, cumsum_out, normed_cumsum
 from .diag import diag
+from .diag_embed import diag_embed
 from .diagonal import diagonal_backward
 from .div import (
     div_mode,
@@ -109,7 +110,9 @@ from .ne import ne, ne_scalar
 from .neg import neg, neg_
 from .nllloss import (
     nll_loss2d_backward,
-    nll_loss_backward
+    nll_loss2d_forward,
+    nll_loss_backward,
+    nll_loss_forward,
 )
 from .nonzero import nonzero
 from .normal import normal_float_tensor, normal_tensor_float, normal_tensor_tensor
@@ -396,7 +399,9 @@ __all__ = [
     "sort",
     "dot",
     "kron",
+    "nll_loss_forward",
     "nll_loss_backward",
+    "nll_loss2d_forward",
     "nll_loss2d_backward",
     "index_put_",
     "index_put",

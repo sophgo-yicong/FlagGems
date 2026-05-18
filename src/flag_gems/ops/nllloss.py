@@ -9,6 +9,59 @@ from ..utils import libentry
 
 logger = logging.getLogger(__name__)
 
+
+@libentry()
+@triton.jit(do_not_specialize=["ignore_index"])
+def nll_loss_forward_kernel(
+    inp_ptr,
+    tgt_ptr,
+    wgt_ptr,
+    out_ptr,
+    ignore_index,
+    N,
+    C,
+    reduction: tl.constexpr = 1,
+    BLOCK_N: tl.constexpr = 128,
+):
+    pid_n = tl.program_id(0)
+    offsets_n = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
+
+    mask_n = offsets_n < N
+
+    tgt = tl.load(tgt_ptr + offsets_n, mask=mask_n, other=0)
+    assert tgt >= 0 and tgt < C, "Invalid target value"
+    ignore_mask = not (tgt == ignore_index) and mask_n
+
+    if wgt_ptr is None:
+        wgt_tgt = ignore_mask.to(tl.float32)
+    else:
+        wgt_tgt = tl.load(wgt_ptr + tgt, mask=ignore_mask, other=0).to(tl.float32)
+
+    inp_tgt_ptrs = inp_ptr + offsets_n * C + tgt
+    inp_tgt = tl.load(inp_tgt_ptrs, mask=ignore_mask, other=0).to(tl.float32)
+    out = inp_tgt * wgt_tgt * -1
+
+    # none
+    if reduction == 0:
+        tl.store(out_ptr + offsets_n, out, mask=mask_n)
+    # mean
+    elif reduction == 1:
+        total_out = tl.sum(out)
+        total_wgt = tl.sum(wgt_tgt)
+        tl.atomic_add(out_ptr, total_out, sem="relaxed")  # output
+        tl.atomic_add(out_ptr + 1, total_wgt, sem="relaxed")  # weight
+        tl.atomic_add(out_ptr + 2, 1, sem="release")  # counter
+        counter = tl.load(out_ptr + 2)
+        if counter == tl.num_programs(0):
+            total_out = tl.load(out_ptr)
+            total_wgt = tl.load(out_ptr + 1)
+            tl.store(out_ptr + 3, total_out / total_wgt)
+    # sum
+    else:
+        total_out = tl.sum(out)
+        tl.atomic_add(out_ptr, total_out, sem="relaxed")
+
+
 @libentry()
 @triton.jit(do_not_specialize=["ignore_index"])
 def nll_loss_backward_kernel(
@@ -185,6 +238,60 @@ def nll_loss2d_backward_kernel(
 #   - mean: ℓ(x, y) = (1/N) * Σ(w_y_n * l_n)
 #   - sum: ℓ(x, y) = Σ(l_n)
 
+
+# 1d & 2d tensor
+def nll_loss_forward(self, target, weight=None, reduction=1, ignore_index=-100):
+    logger.debug("GEMS NLL Loss FWD")
+    assert self.ndim <= 2, "Invalid input ndim"
+    shape = list(target.shape)
+    N = 1 if self.ndim == 1 else self.shape[0]
+    C = self.shape[-1]
+    assert target.numel() == N, "Invalid target size"
+
+    self = self.contiguous()
+    target = target.contiguous()
+    weight = None if weight is None else weight.contiguous()
+
+    # redution: 0-None, 1-mean, 2-sum
+    if reduction == 0:
+        out = torch.empty(shape, dtype=self.dtype, device=self.device)
+    elif reduction == 1:
+        out = torch.zeros(
+            [
+                4,
+            ],
+            dtype=torch.float32,
+            device=self.device,
+        )
+    else:
+        out = torch.zeros([], dtype=torch.float32, device=self.device)
+
+    grid = lambda meta: (triton.cdiv(N, meta["BLOCK_N"]),)
+    with torch_device_fn.device(self.device):
+        nll_loss_forward_kernel[grid](
+            self,
+            target,
+            weight,
+            out,
+            ignore_index,
+            N,
+            C,
+            reduction,
+        )
+
+    # redution: 0-None, 1-mean, 2-sum
+    if reduction == 0:
+        output = out
+        total_weight = torch.empty([], dtype=self.dtype, device=self.device)
+    elif reduction == 1:
+        out = out.to(self.dtype)
+        output = out[3]
+        total_weight = out[1]
+    else:
+        output = out.to(self.dtype)
+        total_weight = torch.empty([], dtype=self.dtype, device=self.device)
+
+    return output, total_weight
 
 
 def nll_loss_backward(
