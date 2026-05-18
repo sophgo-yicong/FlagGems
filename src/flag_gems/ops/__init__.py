@@ -218,6 +218,7 @@ __all__ = [
     "polar",
     "contiguous",
     "diag",
+    "diag_embed",
     "diagonal_backward",
     "elu",
     "pad",
