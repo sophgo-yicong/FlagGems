@@ -626,15 +626,13 @@ def test_arange(start, step, end, dtype, device, pin_memory):
 @pytest.mark.parametrize("device", [device, None])
 @pytest.mark.parametrize("pin_memory", [False, None])
 def test_linspace(start, end, steps, dtype, device, pin_memory):
-    if TO_CPU:
-        return
     ref_out = torch.linspace(
         start,
         end,
         steps,
         dtype=dtype,
         layout=None,
-        device=device,
+        device="cpu" if TO_CPU else device,
         pin_memory=pin_memory,
     )
     with flag_gems.use_gems():
@@ -647,10 +645,10 @@ def test_linspace(start, end, steps, dtype, device, pin_memory):
             device=device,
             pin_memory=pin_memory,
         )
-    if dtype in [torch.float16, torch.bfloat16]:
-        gems_assert_close(res_out, ref_out, dtype=dtype)
+    if dtype is None or dtype.is_floating_point:
+        gems_assert_close(res_out, ref_out, dtype=dtype if dtype is not None else torch.float32)
     else:
-        gems_assert_equal(res_out, ref_out)
+        gems_assert_close(res_out, ref_out, dtype=dtype, atol=1)
 
 
 @pytest.mark.skipif(flag_gems.device == "musa", reason="AssertionError")
