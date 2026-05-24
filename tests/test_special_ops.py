@@ -362,10 +362,18 @@ def test_accuracy_resolve_conj(shape, dtype):
     x = torch.randn(size=shape, dtype=dtype, device="cpu")
     y = x.conj()
     assert y.is_conj()
+    ref_z = y.resolve_conj()
+    # TPU does not support complex types, split into real/imag and process separately
+    real_part = y.real
+    imag_part = y.imag
     with flag_gems.use_gems():
-        res_y = y.to(device=flag_gems.device)
-        z = res_y.resolve_conj()
+        real_tpu = real_part.to(device=flag_gems.device)
+        imag_tpu = imag_part.to(device=flag_gems.device)
+        res_real = torch.resolve_conj(real_tpu)
+        res_imag = torch.resolve_conj(imag_tpu)
+    z = torch.complex(res_real.cpu(), res_imag.cpu())
     assert not z.is_conj()
+    gems_assert_close(z, ref_z, dtype=dtype)
 
 
 @pytest.mark.skipif(flag_gems.device == "musa", reason="AssertionError")

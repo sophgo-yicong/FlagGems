@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Tuple
+from dataclasses import dataclass, replace
+from typing import Optional, Tuple
 
 import triton
 
@@ -113,6 +113,15 @@ def get_codegen_config():
     if device.vendor not in CODEGEN_COFIGS:
         return CODEGEN_COFIGS.get(vendors.NVIDIA)
     return CODEGEN_COFIGS.get(device.vendor)
+
+
+def get_codegen_config_with_max_tile_size(
+    max_tile_size: int,
+) -> Optional[CodeGenConfig]:
+    config = get_codegen_config()
+    if config is None:
+        return None
+    return replace(config, max_tile_size=max_tile_size)
 
 
 def get_heuristics_for_num_warps(tile_size):

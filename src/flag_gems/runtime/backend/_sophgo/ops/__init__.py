@@ -13,6 +13,7 @@ from .cumsum import cumsum, normed_cumsum
 from .diagonal import diagonal
 from .diag_embed import diag_embed
 from .dropout import dropout
+from .eq  import eq, eq_scalar
 from .exponential_ import exponential_
 from .flip import flip
 from .full import full
@@ -26,6 +27,7 @@ from .isfinite import isfinite
 from .isinf import isinf
 from .isnan import isnan
 from .kron import kron
+from .linspace import linspace
 from .logical_and import logical_and
 from .logical_not import logical_not
 from .logical_or import logical_or
@@ -57,6 +59,7 @@ from .rand_like import rand_like
 from .randn import randn
 from .randn_like import randn_like
 from .randperm import randperm
+from .resolve_conj import resolve_conj
 from .rms_norm import rms_norm
 from .scatter import scatter, scatter_
 from .select_scatter import select_scatter
@@ -98,6 +101,7 @@ __all__ = [
     "diagonal",
     "diag_embed",
     "dropout",
+    "eq",
     "exponential_",
     "flip",
     "full",
@@ -113,6 +117,7 @@ __all__ = [
     "isinf",
     "isnan",
     "kron",
+    "linspace",
     "layer_norm",
     "logical_and",
     "logical_not",
@@ -147,6 +152,7 @@ __all__ = [
     "randn",
     "randn_like",
     "randperm",
+    "resolve_conj",
     "rms_norm",
     "scatter",
     "scatter_",
