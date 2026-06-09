@@ -76,6 +76,11 @@ from .var_mean import var_mean
 from .vector_norm import vector_norm
 from .vdot import vdot
 from .where import where_scalar_other, where_scalar_self, where_self, where_self_out
+from .rsqrt import rsqrt, rsqrt_
+from .neg import neg, neg_
+from .bitwise_not import bitwise_not, bitwise_not_
+from .log import log, log_
+from .lerp import lerp_scalar, lerp_scalar_, lerp_tensor, lerp_tensor_
 
 __all__ = [
     "addmm",
@@ -181,4 +186,16 @@ __all__ = [
     "where_scalar_self",
     "where_self",
     "where_self_out",
+    "rsqrt",
+    "rsqrt_",
+    "neg",
+    "neg_",
+    "bitwise_not",
+    "bitwise_not_",
+    "log",
+    "log_",
+    "lerp_scalar",
+    "lerp_scalar_",
+    "lerp_tensor",
+    "lerp_tensor_",
 ]
