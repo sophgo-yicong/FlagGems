@@ -69,12 +69,15 @@ from .stack import stack
 from .sum import sum, sum_dim, sum_dim_out, sum_out
 from .tanh import tanh, tanh_
 from .tile import tile
+from .triu import triu
 from .uniform import uniform_
 from .unique import _unique2
 from .upsample_nearest2d import upsample_nearest2d
 from .var_mean import var_mean
 from .vector_norm import vector_norm
 from .vdot import vdot
+from .vstack import vstack
+from .weightnorm import weight_norm_interface, weight_norm_interface_backward
 from .where import where_scalar_other, where_scalar_self, where_self, where_self_out
 
 __all__ = [
@@ -171,12 +174,16 @@ __all__ = [
     "tanh",
     "tanh_",
     "tile",
+    "triu",
     "uniform_",
     "upsample_nearest2d",
     "_unique2",
     "var_mean",
     "vector_norm",
     "vdot",
+    "vstack",
+    "weight_norm_interface",
+    "weight_norm_interface_backward",
     "where_scalar_other",
     "where_scalar_self",
     "where_self",
