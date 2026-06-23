@@ -81,6 +81,14 @@ from .neg import neg, neg_
 from .bitwise_not import bitwise_not, bitwise_not_
 from .log import log, log_
 from .lerp import lerp_scalar, lerp_scalar_, lerp_tensor, lerp_tensor_
+from .abs import abs, abs_
+from .exp import exp, exp_
+from .sin import sin, sin_
+from .cos import cos, cos_
+from .silu import silu, silu_
+from .relu import relu, relu_
+from .sub import sub, sub_
+from .mul import mul, mul_
 
 __all__ = [
     "addmm",
@@ -198,4 +206,20 @@ __all__ = [
     "lerp_scalar_",
     "lerp_tensor",
     "lerp_tensor_",
+    "abs",
+    "abs_",
+    "exp",
+    "exp_",
+    "sin",
+    "sin_",
+    "cos",
+    "cos_",
+    "silu",
+    "silu_",
+    "relu",
+    "relu_",
+    "sub",
+    "sub_",
+    "mul",
+    "mul_",
 ]
