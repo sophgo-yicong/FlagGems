@@ -1157,11 +1157,7 @@ def test_accuracy_conv2d(shape, kernel, stride, padding, groups, dtype, dilation
         dilation=dilation,
     ).to(dtype)
 
-    atol = 1e-4
-    if flag_gems.vendor_name == "sophgo" and dtype == torch.float32:
-        atol = 2e-2
-
-    gems_assert_close(res_out, ref_out, dtype, atol=atol)
+    gems_assert_close(res_out, ref_out, dtype)
     if flag_gems.vendor_name == "sophgo":
         print("Not support backward, skip.")
     else:

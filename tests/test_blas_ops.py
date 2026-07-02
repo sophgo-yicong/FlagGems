@@ -33,18 +33,13 @@ def test_accuracy_addmm(M, N, K, scalar, dtype):
     ref_mat2 = to_reference(mat2, True)
     ref_bias1 = to_reference(bias1, True)
 
-    if flag_gems.vendor_name == "sophgo" and dtype == torch.float and (scalar >= 3.5 or scalar <= -3.5):
-        scalar = float(3.5 if scalar > 3.5 else -3.5)
     alpha = beta = scalar
 
     ref_out1 = torch.addmm(ref_bias1, ref_mat1, ref_mat2, alpha=alpha, beta=beta)
     with flag_gems.use_gems():
         res_out1 = torch.addmm(bias1, mat1, mat2, alpha=alpha, beta=beta)
 
-    atol=1e-4
-    if flag_gems.vendor_name == "sophgo" and dtype == torch.float:
-        atol=1e-3
-    gems_assert_close(res_out1, ref_out1, dtype, reduce_dim=K, atol=atol)
+    gems_assert_close(res_out1, ref_out1, dtype, reduce_dim=K)
 
     bias2 = torch.randn((M, N), dtype=dtype, device=flag_gems.device)
     ref_bias2 = to_reference(bias2, True)
@@ -53,7 +48,7 @@ def test_accuracy_addmm(M, N, K, scalar, dtype):
     with flag_gems.use_gems():
         res_out2 = torch.addmm(bias2, mat1, mat2, alpha=alpha, beta=beta)
 
-    gems_assert_close(res_out2, ref_out2, dtype, reduce_dim=K, atol=atol)
+    gems_assert_close(res_out2, ref_out2, dtype, reduce_dim=K)
 
 
 @pytest.mark.bmm
@@ -70,10 +65,7 @@ def test_accuracy_bmm(M, N, K, dtype):
     with flag_gems.use_gems():
         res_out = torch.bmm(mat1, mat2)
 
-    atol = 1e-4
-    if flag_gems.vendor_name == "sophgo" and dtype == torch.float32:
-        atol = 1e-3
-    gems_assert_close(res_out, ref_out, dtype, reduce_dim=K, atol=atol)
+    gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
 
 
 # TODO: failed at (1, 1, 2)
@@ -90,10 +82,11 @@ def test_accuracy_mm(M, N, K, dtype):
     with flag_gems.use_gems():
         res_out = torch.mm(mat1, mat2)
 
-    if flag_gems.vendor_name == "sophgo" and dtype == torch.float32:
-        gems_assert_close(res_out, ref_out, dtype, atol=0.05, rtol=1e-4)
-    else:
-        gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
+    # if flag_gems.vendor_name == "sophgo" and dtype == torch.float32:
+    #     gems_assert_close(res_out, ref_out, dtype, atol=0.05, rtol=1e-4)
+    # else:
+    #     gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
+    gems_assert_close(res_out, ref_out, dtype, reduce_dim=K)
 
 
 @pytest.mark.mv
@@ -175,7 +168,4 @@ def test_accuracy_vdot(M, is_conj, dtype, stride):
         else:
             res_out = torch.vdot(inp1, inp2)
     ref_out = torch.vdot(ref_inp1, ref_inp2)
-    atol = 1e-4
-    if flag_gems.vendor_name == "sophgo":
-        atol = 1e-3
-    gems_assert_close(res_out, ref_out, dtype, reduce_dim=inp1.shape[0], atol=atol)
+    gems_assert_close(res_out, ref_out, dtype, reduce_dim=inp1.shape[0])
