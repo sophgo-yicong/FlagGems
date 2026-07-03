@@ -17,6 +17,7 @@ from .diag_embed import diag_embed
 from .diagonal import diagonal
 from .dot import dot
 from .dropout import dropout, native_dropout
+from .eq import eq, eq_scalar
 from .erf import erf, erf_
 from .exponential_ import exponential_
 from .flip import flip
@@ -34,6 +35,7 @@ from .isinf import isinf
 from .isnan import isnan
 from .kron import kron
 from .layernorm import layer_norm
+from .linspace import linspace
 from .log_softmax import log_softmax
 from .logical_and import logical_and
 from .logical_not import logical_not
@@ -115,6 +117,8 @@ __all__ = [
     "diag_embed",
     "diagonal",
     "dropout",
+    "eq",
+    "eq_scalar",
     "erf",
     "erf_",
     "exponential_",
@@ -134,6 +138,7 @@ __all__ = [
     "isinf",
     "isnan",
     "kron",
+    "linspace",
     "layer_norm",
     "log_softmax",
     "logical_and",
