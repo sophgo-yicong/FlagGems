@@ -1,9 +1,18 @@
 from .abs import abs, abs_
+from .add import add, add_
 from .addmm import addmm
 from .all import all, all_dim, all_dims
+from .amax import amax
 from .any import any, any_dim, any_dims
 from .arange import arange, arange_start
 from .batch_norm import batch_norm
+from .bitwise_and import (
+    bitwise_and_scalar,
+    bitwise_and_scalar_,
+    bitwise_and_scalar_tensor,
+    bitwise_and_tensor,
+    bitwise_and_tensor_,
+)
 from .bitwise_not import bitwise_not, bitwise_not_
 from .bitwise_or import (
     bitwise_or_scalar,
@@ -25,20 +34,31 @@ from .cumsum import cumsum, normed_cumsum
 from .diag import diag
 from .diag_embed import diag_embed
 from .diagonal import diagonal
+from .div import (
+    div_mode,
+    div_mode_,
+    floor_divide,
+    floor_divide_,
+    remainder,
+    remainder_,
+    true_divide,
+    true_divide_,
+)
 from .dot import dot
 from .dropout import dropout, native_dropout
+from .embedding import embedding, embedding_backward
 from .eq import eq, eq_scalar
 from .erf import erf, erf_
 from .exp import exp, exp_
-from .embedding import embedding, embedding_backward
 from .exponential_ import exponential_
 from .fill import fill_scalar, fill_scalar_, fill_tensor, fill_tensor_
 from .flip import flip
 from .full import full
-from .gelu import gelu, gelu_
+from .full_like import full_like
 from .ge import ge, ge_scalar
-from .gt import gt, gt_scalar
+from .gelu import gelu, gelu_
 from .groupnorm import group_norm
+from .gt import gt, gt_scalar
 from .hstack import hstack
 from .index_add import index_add
 from .index_put import index_put, index_put_
@@ -50,6 +70,7 @@ from .isinf import isinf
 from .isnan import isnan
 from .kron import kron
 from .layernorm import layer_norm
+from .le import le, le_scalar
 from .lerp import lerp_scalar, lerp_scalar_, lerp_tensor, lerp_tensor_
 from .linspace import linspace
 from .log import log, log_
@@ -58,26 +79,26 @@ from .logical_and import logical_and
 from .logical_not import logical_not
 from .logical_or import logical_or
 from .logical_xor import logical_xor
+from .lt import lt, lt_scalar
 from .masked_fill import masked_fill, masked_fill_
 from .masked_select import masked_select
+from .maximum import maximum
 from .mean import mean, mean_dim
 from .min import min, min_dim
+from .minimum import minimum
 from .mm import mm, mm_out
 from .mul import mul, mul_
 from .multinomial import multinomial
 from .nan_to_num import nan_to_num
+from .ne import ne, ne_scalar
 from .neg import neg, neg_
 from .nllloss import nll_loss2d_forward, nll_loss_forward
 from .nonzero import nonzero
 from .normal import normal_float_tensor, normal_tensor_float, normal_tensor_tensor
-from .pad import pad
-from .polar import polar
-from .amax import amax
-from .arange import arange, arange_start
-from .dot import dot
-from .full_like import full_like
 from .ones import ones
 from .ones_like import ones_like
+from .pad import pad
+from .polar import polar
 from .pow import (
     pow_scalar,
     pow_tensor_scalar,
@@ -90,6 +111,7 @@ from .rand_like import rand_like
 from .randn import randn
 from .randn_like import randn_like
 from .randperm import randperm
+from .reciprocal import reciprocal, reciprocal_
 from .relu import relu, relu_
 from .repeat import repeat
 from .repeat_interleave import (
@@ -122,21 +144,12 @@ from .vstack import vstack
 from .weightnorm import weight_norm_interface, weight_norm_interface_backward
 from .where import where_scalar_other, where_scalar_self, where_self, where_self_out
 from .zeros import zeros
-from .div import (
-    div_mode,
-    div_mode_,
-    floor_divide,
-    floor_divide_,
-    remainder,
-    remainder_,
-    true_divide,
-    true_divide_,
-)
-
 
 __all__ = [
     "abs",
     "abs_",
+    "add",
+    "add_",
     "addmm",
     "all",
     "all_dim",
@@ -148,6 +161,11 @@ __all__ = [
     "arange",
     "arange_start",
     "batch_norm",
+    "bitwise_and_scalar",
+    "bitwise_and_scalar_",
+    "bitwise_and_scalar_tensor",
+    "bitwise_and_tensor",
+    "bitwise_and_tensor_",
     "bitwise_not",
     "bitwise_not_",
     "bitwise_or_scalar",
@@ -206,11 +224,15 @@ __all__ = [
     "isnan",
     "kron",
     "layer_norm",
+    "le",
+    "le_scalar",
     "lerp_scalar",
     "lerp_scalar_",
     "lerp_tensor",
     "lerp_tensor_",
     "linspace",
+    "lt",
+    "lt_scalar",
     "log",
     "log_",
     "log_softmax",
@@ -221,10 +243,12 @@ __all__ = [
     "masked_fill",
     "masked_fill_",
     "masked_select",
+    "maximum",
     "mean",
     "mean_dim",
     "min",
     "min_dim",
+    "minimum",
     "mm",
     "mm_out",
     "mul",
@@ -232,6 +256,8 @@ __all__ = [
     "multinomial",
     "nan_to_num",
     "native_dropout",
+    "ne",
+    "ne_scalar",
     "neg",
     "neg_",
     "nll_loss2d_forward",
@@ -260,6 +286,8 @@ __all__ = [
     "randn",
     "randn_like",
     "randperm",
+    "reciprocal",
+    "reciprocal_",
     "relu",
     "relu_",
     "repeat",
