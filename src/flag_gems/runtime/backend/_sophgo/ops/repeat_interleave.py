@@ -4,8 +4,8 @@ import torch
 import triton
 from triton import language as tl
 
-from flag_gems import runtime
 from flag_gems.utils import triton_lang_extension as tle
+from flag_gems.utils.codegen_config_utils import CodeGenConfig, get_codegen_config
 from flag_gems.utils.pointwise_dynamic import pointwise_dynamic
 from flag_gems.utils.shape_utils import c_contiguous_stride
 from flag_gems.utils.tensor_wrapper import StridedBuffer
@@ -14,8 +14,19 @@ from .index_select import index_select
 
 logger = logging.getLogger(__name__)
 
+# Larger tile + wide grid for the copy path, matching the tuned gelu/where
+# overrides (default SOPHGO config is only 1024 / grid (512,1,1)).
+_base = get_codegen_config()
+_config = CodeGenConfig(
+    max_tile_size=2048,
+    max_grid_size=(65536, 1, 1),
+    max_num_warps_per_cta=_base.max_num_warps_per_cta,
+    prefer_block_pointer=_base.prefer_block_pointer,
+    prefer_1d_tile=_base.prefer_1d_tile,
+)
 
-@pointwise_dynamic(num_inputs=1, promotion_methods=[(0, "DEFAULT")])
+
+@pointwise_dynamic(num_inputs=1, promotion_methods=[(0, "DEFAULT")], config=_config)
 @triton.jit
 def copy_func(x):
     return x
@@ -98,7 +109,9 @@ def repeat_interleave_tensor(repeats, *, output_size=None):
     size = repeats.size(0)
 
     grid = (size,)
-    BLOCK_SIZE = 32
+    # Larger inner-loop stride reduces trip count for the per-pid store loop;
+    # this is a pure fill so there is no accuracy risk. (was 32)
+    BLOCK_SIZE = 256
     repeat_interleave_tensor_kernel[grid](
         repeats,
         cumsum,
