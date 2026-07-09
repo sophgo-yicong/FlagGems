@@ -8,7 +8,6 @@ from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as tle
 
-
 ALL_INT_DTYPES = (torch.int8, torch.int16, torch.int32, torch.int64)
 ALL_FLOAT_DTYPES = (torch.bfloat16, torch.float16, torch.float32, torch.float64)
 
@@ -31,6 +30,27 @@ def full_kernel(
     else:
         fill_value = fill_value_or_ptr
     tl.store(output_ptr + offsets, fill_value, mask=mask)
+
+
+@libentry()
+@triton.jit(do_not_specialize=["fill_value_or_ptr"])
+def full_nomask_kernel(
+    output_ptr,
+    n_elements,
+    fill_value_or_ptr,
+    FILL_VALUE_IS_PTR: tl.constexpr,
+    BLOCK_SIZE: tl.constexpr,
+):
+    # no-mask fast path (n_elements % BLOCK_SIZE == 0); same safe increment the
+    # full/fill overrides use. Skips the per-element mask compare.
+    pid = tle.program_id(axis=0)
+    block_start = pid * BLOCK_SIZE
+    offsets = block_start + tl.arange(0, BLOCK_SIZE)
+    if FILL_VALUE_IS_PTR:
+        fill_value = tl.load(fill_value_or_ptr)
+    else:
+        fill_value = fill_value_or_ptr
+    tl.store(output_ptr + offsets, fill_value)
 
 
 def check_dtype(fill_value, dtype, device):
@@ -64,8 +84,9 @@ def _launch_fill(out, fill_value):
 
     block_size = 4096 if not fill_value_is_ptr else 1024
     grid = (triton.cdiv(n_elements, block_size),)
+    kernel = full_nomask_kernel if n_elements % block_size == 0 else full_kernel
     with torch_device_fn.device(out.device):
-        full_kernel[grid](
+        kernel[grid](
             out,
             n_elements,
             fill_value,

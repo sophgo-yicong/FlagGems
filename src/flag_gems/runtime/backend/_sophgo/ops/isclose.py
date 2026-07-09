@@ -5,6 +5,7 @@ import triton
 import triton.language as tl
 
 from flag_gems.utils import pointwise_dynamic, tl_extra_shim
+from flag_gems.utils.codegen_config_utils import CodeGenConfig, get_codegen_config
 
 from .all import all
 
@@ -15,9 +16,23 @@ except Exception:
     pass
 
 
+# Larger tile + wide grid, matching the tuned gelu/where overrides. This
+# elementwise compare is bandwidth-bound and benefits from the bigger tile
+# (default SOPHGO config is only 1024 / grid (512,1,1)).
+_base = get_codegen_config()
+_config = CodeGenConfig(
+    max_tile_size=2048,
+    max_grid_size=(65536, 1, 1),
+    max_num_warps_per_cta=_base.max_num_warps_per_cta,
+    prefer_block_pointer=_base.prefer_block_pointer,
+    prefer_1d_tile=_base.prefer_1d_tile,
+)
+
+
 @pointwise_dynamic(
     is_tensor=[True, True, False, False, False, False],
     promotion_methods=[(0, 1, "ALWAYS_BOOL")],
+    config=_config,
 )
 @triton.jit
 def isclose_func(
