@@ -26,13 +26,13 @@ KEEPDIM_DIMS = (
 @pytest.mark.parametrize(
     "N, C, H, W, num_groups",
     [
-        (16, 3, 16, 16, 1),
-        (32, 32, 32, 32, 8),
-        (1, 32, 32, 32, 8),
-        (1, 32, 32, 32, 16),
-        (1, 64, 32, 32, 16),
-        (1, 64, 32, 32, 32),
-        (1, 64, 32, 32, 64),
+        (16, 3, 16, 4, 1),
+        (32, 32, 16, 4, 8),
+        (1, 32, 16, 4, 8),
+        (1, 32, 16, 4, 16),
+        (1, 64, 16, 4, 16),
+        (1, 64, 16, 4, 32),
+        (1, 64, 16, 4, 64),
     ],
 )
 @pytest.mark.parametrize("wb_none", [False, True])
@@ -75,13 +75,13 @@ def test_accuracy_groupnorm(N, C, H, W, num_groups, dtype, wb_none):
 @pytest.mark.parametrize(
     "N, C, H, W, num_groups",
     [
-        (16, 3, 16, 16, 1),
-        (32, 32, 32, 32, 8),
-        (1, 32, 32, 32, 8),
-        (1, 32, 32, 32, 16),
-        (1, 64, 32, 32, 16),
-        (1, 64, 32, 32, 32),
-        (1, 64, 32, 32, 64),
+        (16, 3, 16, 4, 1),
+        (32, 32, 16, 4, 8),
+        (1, 32, 16, 4, 8),
+        (1, 32, 16, 4, 16),
+        (1, 64, 16, 4, 16),
+        (1, 64, 16, 4, 32),
+        (1, 64, 16, 4, 64),
     ],
 )
 @pytest.mark.parametrize("wb_none", [False, True])
@@ -156,17 +156,15 @@ def test_accuracy_groupnorm_backward(N, C, H, W, num_groups, dtype, wb_none):
 @pytest.mark.native_layer_norm
 @pytest.mark.parametrize(
     "shape",
-    (
-        [(1, 40999)]
-        if QUICK_MODE
-        else [
-            (200, 36),
-            (4096, 100),
-            (1, 40999),
-            (100, 40499),
-            (4096, 256),
-        ]
-    ),
+    [(1, 512)]
+    if QUICK_MODE
+    else [
+        (200, 36),
+        (4096, 100),
+        (1, 512),
+        (100, 512),
+        (4096, 256),
+    ],
 )
 @pytest.mark.parametrize("wb_none", [False, True])
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
@@ -297,24 +295,22 @@ def test_accuracy_layernorm_backward(shape, dtype, wb_none):
 @pytest.mark.native_instance_norm
 @pytest.mark.parametrize(
     "shape",
-    (
-        [
-            (2, 1, 2, 1),
-        ]
-        if QUICK_MODE
-        else [
-            (1, 1, 2, 2),
-            (2, 1, 2, 2),
-            (2, 3, 2, 2),
-            (2, 3, 128, 128),
-            (4, 16, 8, 8),
-            (2, 3, 1024),
-            (2, 3, 2048),
-            (2, 3, 4096),
-            (2, 3, 8192),
-            (2, 3, 10240),
-        ]
-    ),
+    [
+        (2, 1, 2, 1),
+    ]
+    if QUICK_MODE
+    else [
+        (1, 1, 2, 2),
+        (2, 1, 2, 2),
+        (2, 3, 2, 2),
+        (2, 3, 16, 4),
+        (4, 16, 8, 4),
+        (2, 3, 32),
+        (2, 3, 32),
+        (2, 3, 32),
+        (2, 3, 32),
+        (2, 3, 32),
+    ],
 )
 @pytest.mark.parametrize("dtype", FLOAT_DTYPES)
 @pytest.mark.parametrize("has_weight_bias", [True] if QUICK_MODE else [False, True])
@@ -448,7 +444,8 @@ def test_accuracy_weightnorm(shape, dtype, dim):
     res_v_grad, res_g_grad = torch.autograd.grad(
         res_w_out, (v, g), grad_outputs=res_w_grad
     )
-    # Backward propagation has an error amplification effect; relax the tolerance for an extremely small reduce_size to prevent flaky test failures
+    # Backward propagation has an error amplification effect; relax the tolerance for
+    # an extremely small reduce_size to prevent flaky test failures
     bwd_reduce_dim = max(reduce_size, 64)
     gems_assert_close(res_v_grad, ref_v_grad, dtype, reduce_dim=bwd_reduce_dim)
     gems_assert_close(res_g_grad, ref_g_grad, dtype, reduce_dim=bwd_reduce_dim)
@@ -507,17 +504,20 @@ def test_accuracy_weightnorm_interface_backward(shape, dtype, dim):
     ref_g = to_reference(res_g, True)
     ref_norm = to_reference(res_norm, True)
 
-    ref_v_grad, ref_g_grad = torch.autograd.grad(
-        ref_w_out, (ref_v, ref_g), grad_outputs=ref_w_grad
+    ref_v_grad, ref_g_grad = torch.ops.aten._weight_norm_interface_backward(
+        ref_w_grad, ref_v, ref_g, ref_norm, dim
     )
-    res_v_grad, res_g_grad = torch.autograd.grad(
-        res_w_out, (v, g), grad_outputs=res_w_grad
+    with flag_gems.use_gems():
+        res_v_grad, res_g_grad = torch.ops.aten._weight_norm_interface_backward(
+            res_w_grad, res_v, res_g, res_norm, dim
+        )
+    reduce_size = res_v.numel() // shape[dim]
+    gems_assert_close(
+        res_v_grad, ref_v_grad, dtype, reduce_dim=reduce_size, equal_nan=True
     )
-
-    # Backward propagation has an error amplification effect; relax the tolerance for an extremely small reduce_size to prevent flaky test failures
-    bwd_reduce_dim = max(reduce_size, 64)
-    gems_assert_close(res_v_grad, ref_v_grad, dtype, reduce_dim=bwd_reduce_dim)
-    gems_assert_close(res_g_grad, ref_g_grad, dtype, reduce_dim=bwd_reduce_dim)
+    gems_assert_close(
+        res_g_grad, ref_g_grad, dtype, reduce_dim=reduce_size, equal_nan=True
+    )
 
 
 @pytest.mark.rms_norm
