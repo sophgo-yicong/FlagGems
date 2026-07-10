@@ -12,8 +12,10 @@ from .accuracy_utils import (
 )
 from .conftest import QUICK_MODE
 
-MN_SHAPES = [(1, 32)] if QUICK_MODE else [(1, 32), (160, 512), (4096, 497)]
-MNK_SHAPES = [(1, 1, 32)] if QUICK_MODE else [(1, 1, 32), (15, 160, 32), (495, 512, 32)]
+MN_SHAPES = [(1, 32)] if QUICK_MODE else [(1, 32), (160, 1024), (5333, 497)]
+MNK_SHAPES = (
+    [(1, 1, 32)] if QUICK_MODE else [(1, 1, 32), (15, 160, 1024), (495, 5333, 71)]
+)
 FLOAT_DTYPES = [torch.float32] if QUICK_MODE else FLOAT_DTYPES
 
 
@@ -31,11 +33,7 @@ def test_accuracy_addmm(M, N, K, scalar, dtype):
     ref_mat2 = to_reference(mat2, True)
     ref_bias1 = to_reference(bias1, True)
 
-    if (
-        flag_gems.vendor_name == "sophgo"
-        and dtype == torch.float
-        and (scalar >= 3.5 or scalar <= -3.5)
-    ):
+    if flag_gems.vendor_name == "sophgo" and dtype == torch.float and (scalar >= 3.5 or scalar <= -3.5):
         scalar = float(3.5 if scalar > 3.5 else -3.5)
     alpha = beta = scalar
 
@@ -43,9 +41,9 @@ def test_accuracy_addmm(M, N, K, scalar, dtype):
     with flag_gems.use_gems():
         res_out1 = torch.addmm(bias1, mat1, mat2, alpha=alpha, beta=beta)
 
-    atol = 1e-4
+    atol=1e-4
     if flag_gems.vendor_name == "sophgo" and dtype == torch.float:
-        atol = 1e-3
+        atol=1e-3
     gems_assert_close(res_out1, ref_out1, dtype, reduce_dim=K, atol=atol)
 
     bias2 = torch.randn((M, N), dtype=dtype, device=flag_gems.device)
@@ -151,7 +149,7 @@ def test_accuracy_outer(M, N, dtype):
 def test_accuracy_vdot(M, is_conj, dtype, stride):
     inp1_is_conj, inp2_is_conj = is_conj
 
-    if flag_gems.device == "musa" or flag_gems.vendor_name == "sophgo":
+    if flag_gems.device == "musa" or flag_gems.vendor_name == 'sophgo':
         inp1 = torch.randn(M, dtype=dtype, device="cpu")
         inp2 = torch.randn(M, dtype=dtype, device="cpu")
     else:
@@ -170,7 +168,7 @@ def test_accuracy_vdot(M, is_conj, dtype, stride):
     ref_inp2 = to_reference(inp2, True)
 
     with flag_gems.use_gems():
-        if flag_gems.device == "musa" or flag_gems.vendor_name == "sophgo":
+        if flag_gems.device == "musa" or flag_gems.vendor_name == 'sophgo':
             res_out = torch.vdot(
                 inp1.to(device=flag_gems.device), inp2.to(device=flag_gems.device)
             )
