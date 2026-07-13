@@ -47,6 +47,7 @@ def addmm_kernel(
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
+    DOT_PRECISION: tl.constexpr = "none",
 ):
     """
     Sophgo TPU-specific addmm kernel.
@@ -83,8 +84,24 @@ def addmm_kernel(
         a = tl.load(a_ptrs, mask=a_mask, other=0.0)
         b = tl.load(b_ptrs, mask=b_mask, other=0.0)
 
-        # Matrix multiplication accumulation
-        accumulator += tl.dot(a, b, allow_tf32=False)
+        if  DOT_PRECISION == "bf16x6":
+            a_hi = a.to(tl.bfloat16)
+            a_rem = a - a_hi.to(tl.float32)
+            a_mid = a_rem.to(tl.bfloat16)
+            a_lo = (a_rem - a_mid.to(tl.float32)).to(tl.bfloat16)
+            b_hi = b.to(tl.bfloat16)
+            b_rem = b - b_hi.to(tl.float32)
+            b_mid = b_rem.to(tl.bfloat16)
+            b_lo = (b_rem - b_mid.to(tl.float32)).to(tl.bfloat16)
+            d1 = tl.dot(a_mid, b_mid)
+            d2 = tl.dot(a_lo, b_hi)
+            d3 = tl.dot(a_hi, b_lo)
+            d4 = tl.dot(a_mid, b_hi)
+            d5 = tl.dot(a_hi, b_mid)
+            d6 = tl.dot(a_hi, b_hi)
+            accumulator += d1 + d2 + d3 + d4 + d5 + d6
+        else:
+            accumulator += tl.dot(a, b, allow_tf32=False)
 
     # Load bias (using 2D broadcasted bias)
     bias_ptrs = bias_ptr + offs_m[:, None] * stride_im + offs_n[None, :] * stride_in
@@ -134,6 +151,12 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
     BLOCK_SIZE_N = 32
     BLOCK_SIZE_K = 8
 
+    # fp32 输入走 f32 拆分 → 多次 bf16 点积的高精度路径（移植自 f32dot.py）。
+    if mat1.dtype == torch.float32 or mat2.dtype == torch.float32:
+        dot_precision = "bf16x6"
+    else:
+        dot_precision = "none"
+
     grid = (triton.cdiv(M, BLOCK_SIZE_M), triton.cdiv(N, BLOCK_SIZE_N))
 
     with torch_device_fn.device(mat1.device):
@@ -158,6 +181,7 @@ def addmm(bias, mat1, mat2, *, beta=1, alpha=1):
             BLOCK_SIZE_M=BLOCK_SIZE_M,
             BLOCK_SIZE_N=BLOCK_SIZE_N,
             BLOCK_SIZE_K=BLOCK_SIZE_K,
+            DOT_PRECISION=dot_precision,
         )
 
     return out

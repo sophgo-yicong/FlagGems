@@ -34,6 +34,7 @@ def bmm_kernel(
     DIVISIBLE_M: tl.constexpr,
     DIVISIBLE_N: tl.constexpr,
     DIVISIBLE_K: tl.constexpr,
+    DOT_PRECISION: tl.constexpr = "none",
 ):
     pid_b = tle.program_id(2)
     A += pid_b * M * K
@@ -82,7 +83,17 @@ def bmm_kernel(
 
         a = tl.load(a_ptrs, mask_a)
         b = tl.load(b_ptrs, mask_b)
-        o += tl.dot(a, b, allow_tf32=False)
+        if DOT_PRECISION == "bf16x3":
+            a_hi = a.to(tl.bfloat16)
+            a_mid = (a - a_hi.to(tl.float32)).to(tl.bfloat16)
+            b_hi = b.to(tl.bfloat16)
+            b_mid = (b - b_hi.to(tl.float32)).to(tl.bfloat16)
+            d1 = tl.dot(a_mid, b_hi)
+            d2 = tl.dot(a_hi, b_mid)
+            d3 = tl.dot(a_hi, b_hi)
+            o += d1 + d2 + d3
+        else:
+            o += tl.dot(a, b, allow_tf32=False)
 
     if DIVISIBLE_M and DIVISIBLE_N:
         mask_c = None
@@ -103,11 +114,17 @@ def bmm(A, B):
     B = B.contiguous()
     out = torch.empty((batch, M, N), dtype=A.dtype, device=A.device)
 
+    # fp32 输入走 f32 拆分 → 多次 bf16 点积的高精度路径（移植自 f32dot.py）。
+    if A.dtype == torch.float32 or B.dtype == torch.float32:
+        dot_precision = "bf16x3"
+    else:
+        dot_precision = "none"
+
     grid_fn = lambda meta: (
         triton.cdiv(meta["M"], meta["TILE_M"]),
         triton.cdiv(meta["N"], meta["TILE_N"]),
         batch,
     )
     with torch_device_fn.device(A.device):
-        bmm_kernel[grid_fn](A, B, out, M, N, K)
+        bmm_kernel[grid_fn](A, B, out, M, N, K, DOT_PRECISION=dot_precision)
     return out

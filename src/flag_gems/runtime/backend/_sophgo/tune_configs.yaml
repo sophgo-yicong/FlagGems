@@ -86,7 +86,9 @@ mm:
 - META:
     BLOCK_M: 64
     BLOCK_N: 64
-    BLOCK_K: 128
+    # BLOCK_K 从 128 降为 64: fp32 走 bf16x3 拆分点积时, bf16 Tensor Core dot 在
+    # BLOCK_K=128 下会超出 PPL 本地内存导致 ppl-compile 失败; 64 可正常编译。
+    BLOCK_K: 64
   num_stages: 1
   num_warps: 4
 

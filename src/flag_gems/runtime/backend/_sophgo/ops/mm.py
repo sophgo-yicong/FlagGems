@@ -1,6 +1,7 @@
 import logging
 
 import torch
+import torch_tpu
 import triton
 import triton.language as tl
 
@@ -10,6 +11,17 @@ from flag_gems.utils import libentry, libtuner
 
 # from ..utils import triton_lang_extension as tle
 logger = logging.getLogger(__name__)
+
+
+# ---- f32 拆分 / BF16 高精度点积（移植自 f32dot.py） ----
+# 将 fp32 输入拆成若干个 bf16 分量, 用多次 bf16 Tensor Core dot 逼近 f32 精度。
+# 该逻辑直接内联在 matmul_kernel 循环体内 —— 曾尝试抽成 @triton.jit 设备函数或
+# 普通 Python 辅助函数, 但经 @libtuner/@heuristics 包装后的 kernel 无法解析跨函数
+# 的子例程调用 (报 'In' object has no attribute '__name__'), 故必须内联。
+# 分量拆分: f32 有 23 位尾数, bf16 只有 7 位; 反复 trunc_f32→bf16 再从原值中减去,
+# 依次得到 hi / mid / lo 分量。BF16x3 用 2 个分量 + 3 次 dot。详见 f32dot.py。
+# 注意: bf16 Tensor Core dot 在 BLOCK_K=128 时会超出 PPL 本地内存, 故 mm 的
+# tune_configs.yaml 已将 BLOCK_K 降为 64。
 
 
 @libentry()
@@ -33,6 +45,7 @@ def matmul_kernel(
     stride_cm,
     stride_cn,
     dot_out_dtype: tl.constexpr,
+    DOT_PRECISION: tl.constexpr,
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     BLOCK_K: tl.constexpr,
@@ -67,14 +80,21 @@ def matmul_kernel(
         b_mask = (offs_k[:, None] < K - k * BLOCK_K) & (offs_bn[None, :] < N)
         a = tl.load(a_ptrs, mask=a_mask, other=0.0)
         b = tl.load(b_ptrs, mask=b_mask, other=0.0)
-        # We accumulate along the K dimension.
-        accumulator += tl.dot(a, b)
+        if DOT_PRECISION == "bf16x3":
+            a_hi = a.to(tl.bfloat16)
+            a_mid = (a - a_hi.to(tl.float32)).to(tl.bfloat16)
+            b_hi = b.to(tl.bfloat16)
+            b_mid = (b - b_hi.to(tl.float32)).to(tl.bfloat16)
+            d1 = tl.dot(a_mid, b_hi)
+            d2 = tl.dot(a_hi, b_mid)
+            d3 = tl.dot(a_hi, b_hi)
+            d = d1 + d2 + d3
+            accumulator += d
+        else:
+            accumulator += tl.dot(a, b)
         # Advance the ptrs to the next K block.
         a_ptrs += BLOCK_K * stride_ak
         b_ptrs += BLOCK_K * stride_bk
-    # You can fuse arbitrary activation functions here
-    # while the accumulator is still in FP32!
-    c = accumulator.to(tl.float32)
 
     # -----------------------------------------------------------
     # Write back the block of the output matrix C with masks.
@@ -82,7 +102,7 @@ def matmul_kernel(
     offs_cn = pid_n * BLOCK_N + tl.arange(0, BLOCK_N)
     c_ptrs = c_ptr + stride_cm * offs_cm[:, None] + stride_cn * offs_cn[None, :]
     c_mask = (offs_cm[:, None] < M) & (offs_cn[None, :] < N)
-    tl.store(c_ptrs, c, mask=c_mask)
+    tl.store(c_ptrs, accumulator, mask=c_mask)
 
 
 _ordered_datatypes = [torch.float16, torch.bfloat16, torch.float32]
@@ -128,6 +148,11 @@ def mm(a, b):
         return c
     c = torch.empty((M, N), device=device, dtype=c_dtype)
     dot_out_dtype = tl.float32
+    # fp32 输入走 f32 拆分 → 多次 bf16 点积的高精度路径（移植自 f32dot.py）。
+    if a.dtype == torch.float32 or b.dtype == torch.float32:
+        dot_precision = "bf16x3"
+    else:
+        dot_precision = "none"
     # launch kernel
     grid = lambda META: (
         triton.cdiv(M, META["BLOCK_M"]),
@@ -148,6 +173,7 @@ def mm(a, b):
             c.stride(0),
             c.stride(1),
             dot_out_dtype=dot_out_dtype,
+            DOT_PRECISION=dot_precision,
         )
     return c
 
@@ -169,6 +195,11 @@ def mm_out(a, b, *, out):
     # allocates output
     c = out
     dot_out_dtype = tl.float32
+    # fp32 输入走 f32 拆分 → 多次 bf16 点积的高精度路径（移植自 f32dot.py）。
+    if a.dtype == torch.float32 or b.dtype == torch.float32:
+        dot_precision = "bf16x3"
+    else:
+        dot_precision = "none"
     # launch kernel
     grid = lambda META: (
         triton.cdiv(M, META["BLOCK_M"]),
@@ -189,5 +220,6 @@ def mm_out(a, b, *, out):
             c.stride(0),
             c.stride(1),
             dot_out_dtype=dot_out_dtype,
+            DOT_PRECISION=dot_precision,
         )
     return c
