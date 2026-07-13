@@ -36,6 +36,8 @@ def bitwise_and_scalar(A, B):
 
 def bitwise_and_scalar_(A, B):
     logger.debug("GEMS BITWISE AND_ SCALAR")
+    if B == -1:
+        return A
     return bitwise_and_func_scalar(A, B, out0=A)
 
 
