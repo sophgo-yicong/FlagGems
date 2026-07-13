@@ -45,6 +45,7 @@ def bmm_kernel(
     TILE_M: tl.constexpr,
     TILE_N: tl.constexpr,
     TILE_K: tl.constexpr,
+    DOT_PRECISION: tl.constexpr = "none",
 ):
     pid_m = tle.program_id(0)
     pid_n = tle.program_id(1)
@@ -71,7 +72,17 @@ def bmm_kernel(
 
         a = tl.load(a_ptrs, mask=mask_m[:, None] & mask_k[None, :], other=0.0)
         b = tl.load(b_ptrs, mask=mask_k[:, None] & mask_n[None, :], other=0.0)
-        acc += tl.dot(a, b, allow_tf32=False)
+        if DOT_PRECISION == "bf16x3":
+            a_hi = a.to(tl.bfloat16)
+            a_mid = (a - a_hi.to(tl.float32)).to(tl.bfloat16)
+            b_hi = b.to(tl.bfloat16)
+            b_mid = (b - b_hi.to(tl.float32)).to(tl.bfloat16)
+            d1 = tl.dot(a_mid, b_hi)
+            d2 = tl.dot(a_hi, b_mid)
+            d3 = tl.dot(a_hi, b_hi)
+            acc += d1 + d2 + d3
+        else:
+            acc += tl.dot(a, b, allow_tf32=False)
 
     o_ptrs = o_batch + offs_m[:, None] * stride_om + offs_n[None, :] * stride_on
     tl.store(o_ptrs, acc, mask=mask_m[:, None] & mask_n[None, :])
@@ -98,6 +109,11 @@ def bmm(A, B):
         batch,
     )
 
+    if A.dtype == torch.float32 or B.dtype == torch.float32:
+        dot_precision = "bf16x3"
+    else:
+        dot_precision = "none"
+
     with torch_device_fn.device(A.device):
         bmm_kernel[grid](
             A,
@@ -118,6 +134,7 @@ def bmm(A, B):
             TILE_M=tile_m,
             TILE_N=tile_n,
             TILE_K=tile_k,
+            DOT_PRECISION=dot_precision,
             num_warps=num_warps,
             num_stages=2,
         )
