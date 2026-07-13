@@ -262,3 +262,91 @@ CUSTOMIZED_UNUSED_OPS = (
 
 
 __all__ = ["*"]
+
+
+def _register_sophgo_extra_ops():
+    """Register sophgo-only op overrides that the shared registry omits.
+
+    Problem this targets: when the backend binds its own ``aten::dropout``
+    kernel on both ``PrivateUse1`` and ``AutogradPrivateUse1`` without routing
+    it through ``native_dropout``, FlagGems' ``native_dropout`` override can
+    never reach ``dropout`` and the backend kernel runs instead. Rather than
+    assume this holds, ``_needs_dropout_override`` probes the live dispatch
+    table at registration time and the override applies only when it does.
+
+    The shared registration table in ``flag_gems/__init__.py`` intentionally
+    omits ``dropout`` (it relies on CPU decomposition), and there is no
+    per-vendor hook to append extra op keys. So we wrap ``Register.for_each``
+    here -- this module is only imported for the sophgo vendor -- to append the
+    ``dropout`` override onto whatever ``lib`` the current ``enable()`` /
+    ``use_gems()`` created, keeping it scoped to the same lifecycle.
+    """
+    import torch
+
+    from flag_gems.runtime.register import Register
+
+    if getattr(Register, "_sophgo_extra_patched", False):
+        return
+    original_for_each = Register.for_each
+
+    def _needs_dropout_override(reg_key, reg_bac_key):
+        """Probe whether this backend actually preempts ``aten::dropout``.
+
+        The override is only needed when the backend has bound a kernel for
+        ``dropout`` on both dispatch keys while leaving ``native_dropout``
+        unbound (so overriding only ``native_dropout`` cannot reach it). This
+        is exactly the situation the override targets; if a future backend
+        stops preempting ``dropout`` (or routes it through ``native_dropout``),
+        the probe returns False and the override is skipped automatically.
+
+        Must be probed before FlagGems registers anything in this pass: our own
+        ``dropout`` registration would make ``dropout_bound`` trivially True, and
+        the shared table's ``native_dropout`` registration would flip
+        ``native_bound`` and mask a genuine preemption.
+        """
+        has = torch._C._dispatch_has_kernel_for_dispatch_key
+        dropout_bound = has("aten::dropout", reg_key) and has(
+            "aten::dropout", reg_bac_key
+        )
+        native_bound = has("aten::native_dropout", reg_key) or has(
+            "aten::native_dropout", reg_bac_key
+        )
+        return dropout_bound and not native_bound
+
+    def for_each(self):
+        # This patch relies on Register internals (reg_key / reg_bac_key / lib).
+        # If an upstream FlagGems refactor removes them, fail loudly here instead
+        # of silently skipping the override -- otherwise dropout falls back to the
+        # pre-existing device kernel with no visible error.
+        assert all(hasattr(self, attr) for attr in ("reg_key", "reg_bac_key", "lib")), (
+            "sophgo dropout patch: Register interface changed, update "
+            "_register_sophgo_extra_ops in _sophgo/__init__.py"
+        )
+        # Probe the backend's own dispatch state BEFORE any registration in this
+        # pass, then cache it for the process -- once we (or the shared table)
+        # register, the probe no longer reflects the backend's native state.
+        if not hasattr(Register, "_sophgo_dropout_preempted"):
+            Register._sophgo_dropout_preempted = _needs_dropout_override(
+                self.reg_key, self.reg_bac_key
+            )
+
+        original_for_each(self)
+        from _sophgo.ops import dropout
+
+        if dropout.__name__ in self.unused_ops:
+            return
+        # Only override when the backend actually preempts dropout as described
+        # above; otherwise the shared native_dropout override already suffices.
+        if not Register._sophgo_dropout_preempted:
+            return
+        # Override both keys: AutogradPrivateUse1 handles the grad-enabled path
+        # (default), PrivateUse1 the no-grad path; the backend occupies both.
+        for key in (self.reg_key, self.reg_bac_key):
+            self.lib.impl("dropout", dropout, key)
+        self.all_ops.append("dropout")
+
+    Register.for_each = for_each
+    Register._sophgo_extra_patched = True
+
+
+_register_sophgo_extra_ops()
