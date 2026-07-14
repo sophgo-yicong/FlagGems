@@ -21,8 +21,8 @@ except Exception:
 # (default SOPHGO config is only 1024 / grid (512,1,1)).
 _base = get_codegen_config()
 _config = CodeGenConfig(
-    max_tile_size=2048,
-    max_grid_size=(65536, 1, 1),
+    max_tile_size=4096,
+    max_grid_size=(64, 1, 1),
     max_num_warps_per_cta=_base.max_num_warps_per_cta,
     prefer_block_pointer=_base.prefer_block_pointer,
     prefer_1d_tile=_base.prefer_1d_tile,

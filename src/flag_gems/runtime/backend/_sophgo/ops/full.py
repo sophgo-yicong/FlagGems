@@ -6,7 +6,8 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems.ops.full import check_dtype, full as _fallback_full
+from flag_gems.ops.full import check_dtype
+from flag_gems.ops.full import full as _fallback_full
 from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as tle
 
@@ -171,7 +172,10 @@ def _launch_full_tensor(size, fill_value, dtype, device):
 
 
 def _launch_full_half_scalar(size, fill_value, dtype, device):
-    return _launch_full_scalar(size, fill_value, torch.float32, device).to(dtype)
+    # Fill directly at the half dtype: a constant fill has no arithmetic, so
+    # there is no precision reason to round-trip through fp32 (which wrote the
+    # full fp32 buffer then re-read+converted it — ~3x the bytes moved).
+    return _launch_full_scalar(size, fill_value, dtype, device)
 
 
 def full(size, fill_value, *, dtype=None, layout=None, device=None, pin_memory=None):
@@ -208,7 +212,13 @@ def full(size, fill_value, *, dtype=None, layout=None, device=None, pin_memory=N
                     pin_memory=pin_memory,
                 )
             if _is_tpu_tensor(fill_value):
-                if resolved_dtype in (torch.float16, torch.bfloat16):
+                # Direct fill when the source scalar tensor already matches the
+                # output dtype (incl. fp16/bf16) — no fp32 round-trip needed.
+                # Only fall back to the fp32 staging path on a dtype mismatch.
+                if (
+                    resolved_dtype in (torch.float16, torch.bfloat16)
+                    and fill_value.dtype is not resolved_dtype
+                ):
                     return _launch_full_tensor(
                         size, fill_value.to(torch.float32), torch.float32, device
                     ).to(resolved_dtype)
@@ -220,7 +230,9 @@ def full(size, fill_value, *, dtype=None, layout=None, device=None, pin_memory=N
             return _launch_full_scalar(size, fill_value.item(), resolved_dtype, device)
         if isinstance(fill_value, Number):
             if resolved_dtype in (torch.float16, torch.bfloat16):
-                return _launch_full_half_scalar(size, fill_value, resolved_dtype, device)
+                return _launch_full_half_scalar(
+                    size, fill_value, resolved_dtype, device
+                )
             return _launch_full_scalar(size, fill_value, resolved_dtype, device)
 
     return _fallback_full(
