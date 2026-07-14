@@ -5,14 +5,14 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems.ops.masked_fill import (
-    masked_fill as _fallback_masked_fill,
-    masked_fill_ as _fallback_masked_fill_,
-)
+from flag_gems.ops.masked_fill import masked_fill as _fallback_masked_fill
+from flag_gems.ops.masked_fill import masked_fill_ as _fallback_masked_fill_
 from flag_gems.utils import broadcastable_to, libentry
 from flag_gems.utils import triton_lang_extension as tle
 
 logger = logging.getLogger(__name__)
+
+_SOPHGO_GRID_CAP = 64
 
 
 @libentry()
@@ -26,13 +26,17 @@ def _masked_fill_same_shape_select_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tle.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    valid = offsets < n_elements
+    num_jobs = tle.num_programs(0)
+    block_start = (pid * BLOCK_SIZE).to(tl.int64)
+    step = num_jobs * BLOCK_SIZE
+    for block_start_offset in range(block_start, n_elements, step):
+        offsets = block_start_offset + tl.arange(0, BLOCK_SIZE)
+        valid = offsets < n_elements
 
-    fill_mask = tl.load(mask_ptr + offsets, mask=valid, other=0).to(tl.int1)
-    cur = tl.load(inp + offsets, mask=valid, other=0.0)
-    out_val = tl.where(fill_mask, value, cur)
-    tl.store(out + offsets, out_val, mask=valid)
+        fill_mask = tl.load(mask_ptr + offsets, mask=valid, other=0).to(tl.int1)
+        cur = tl.load(inp + offsets, mask=valid, other=0.0)
+        out_val = tl.where(fill_mask, value, cur)
+        tl.store(out + offsets, out_val, mask=valid)
 
 
 @libentry()
@@ -66,11 +70,15 @@ def _masked_fill_same_shape_inplace_kernel(
     BLOCK_SIZE: tl.constexpr,
 ):
     pid = tle.program_id(0)
-    offsets = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    valid = offsets < n_elements
+    num_jobs = tle.num_programs(0)
+    block_start = (pid * BLOCK_SIZE).to(tl.int64)
+    step = num_jobs * BLOCK_SIZE
+    for block_start_offset in range(block_start, n_elements, step):
+        offsets = block_start_offset + tl.arange(0, BLOCK_SIZE)
+        valid = offsets < n_elements
 
-    fill_mask = tl.load(mask_ptr + offsets, mask=valid, other=0).to(tl.int1)
-    tl.store(inp + offsets, value, mask=valid & fill_mask)
+        fill_mask = tl.load(mask_ptr + offsets, mask=valid, other=0).to(tl.int1)
+        tl.store(inp + offsets, value, mask=valid & fill_mask)
 
 
 @libentry()
@@ -119,12 +127,17 @@ def _is_tpu_tensor(x):
     return isinstance(x, torch.Tensor) and x.device.type in ("tpu", "sophgo")
 
 
+# masked_fill is a pure select (no arithmetic), so fp16/bf16 need no upcast:
+# the fill value and the kept elements are stored back at the tensor dtype.
+_SOPHGO_FAST_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
+
+
 def _can_use_fast_path(inp, mask, value):
     if not (_is_tpu_tensor(inp) and isinstance(mask, torch.Tensor)):
         return False
     if not (inp.is_contiguous() and mask.is_contiguous()):
         return False
-    if not (inp.dtype is torch.float32 and mask.dtype is torch.bool):
+    if not (inp.dtype in _SOPHGO_FAST_DTYPES and mask.dtype is torch.bool):
         return False
     if torch.is_tensor(value):
         return value.ndim == 0
@@ -132,9 +145,11 @@ def _can_use_fast_path(inp, mask, value):
 
 
 def _same_shape_block_size(n_elements):
-    if n_elements <= 65536:
-        return 256
-    return 1024
+    return 4096 if n_elements <= 4096 else 8192
+
+
+def _same_shape_grid(n_elements, block_size):
+    return (min(triton.cdiv(n_elements, block_size), _SOPHGO_GRID_CAP),)
 
 
 def _lastdim_broadcast_inner(inp, mask):
@@ -154,7 +169,7 @@ def _as_scalar_value(value):
 def _launch_same_shape(inp, mask, value, inplace):
     n_elements = inp.numel()
     block_size = _same_shape_block_size(n_elements)
-    grid = (triton.cdiv(n_elements, block_size),)
+    grid = _same_shape_grid(n_elements, block_size)
     value = float(_as_scalar_value(value))
     if inplace:
         _masked_fill_same_shape_inplace_kernel[grid](
@@ -178,10 +193,10 @@ def _launch_same_shape(inp, mask, value, inplace):
     return out
 
 
-def _launch_same_shape_small_select(inp, mask, value):
+def _launch_same_shape_select(inp, mask, value):
     n_elements = inp.numel()
-    block_size = 256
-    grid = (triton.cdiv(n_elements, block_size),)
+    block_size = _same_shape_block_size(n_elements)
+    grid = _same_shape_grid(n_elements, block_size)
     out = torch.empty_like(inp)
     _masked_fill_same_shape_select_kernel[grid](
         inp,
@@ -240,9 +255,7 @@ def masked_fill(inp, mask, value):
 
     if _can_use_fast_path(inp, mask, value):
         if tuple(mask.shape) == tuple(inp.shape):
-            if inp.numel() <= 65536:
-                return _launch_same_shape_small_select(inp, mask, value)
-            return _fallback_masked_fill(inp, mask, value)
+            return _launch_same_shape_select(inp, mask, value)
         inner = _lastdim_broadcast_inner(inp, mask)
         if inner is not None:
             return _launch_lastdim_broadcast(inp, mask, value, inner, inplace=False)
@@ -266,9 +279,7 @@ def masked_fill_(inp, mask, value):
 
     if _can_use_fast_path(inp, mask, value):
         if tuple(mask.shape) == tuple(inp.shape):
-            if inp.numel() <= 65536:
-                return _launch_same_shape(inp, mask, value, inplace=True)
-            return _fallback_masked_fill_(inp, mask, value)
+            return _launch_same_shape(inp, mask, value, inplace=True)
         inner = _lastdim_broadcast_inner(inp, mask)
         if inner is not None:
             return _launch_lastdim_broadcast(inp, mask, value, inner, inplace=True)
