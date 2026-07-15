@@ -1,4 +1,5 @@
 import logging
+import math
 
 import torch
 import triton
@@ -7,6 +8,37 @@ from triton import language as tl
 from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import triton_lang_extension as tle
 from flag_gems.utils.libentry import libentry
+
+# sophgo repeat fast path: when only the first (padded) dim is repeated and the
+# rest are 1, the output is just R back-to-back flat copies of the contiguous
+# input — fuse into ONE grid-stride launch (grid capped at the core count)
+# instead of the rank-specialized divmod kernel.
+_REPEAT_GRID_CAP = 64
+_REPEAT_BLOCK = 4096
+
+
+@libentry()
+@triton.jit
+def _repeat_flat_kernel(
+    in_ptr,
+    out_ptr,
+    numel,
+    R: tl.constexpr,
+    BLOCK: tl.constexpr,
+    CHUNKS,
+):
+    pid = tle.program_id(0)
+    nprog = tle.num_programs(0)
+    for r in range(R):
+        base = r * numel
+        for c in range(CHUNKS):
+            chunk = pid + c * nprog
+            off = chunk * BLOCK + tl.arange(0, BLOCK)
+            m = off < numel
+            tl.store(
+                out_ptr + base + off, tl.load(in_ptr + off, mask=m, other=0), mask=m
+            )
+
 
 # repeat kernel: copy the whole input as one period along each dimension,
 # out_shape[i] = in_shape[i] * count[i].
@@ -230,6 +262,31 @@ def repeat(inp: torch.Tensor, sizes) -> torch.Tensor:
 
     # make input contiguous so reshape is zero-copy and stride_last == 1
     in0 = inp.contiguous().reshape(in0_shape)
+
+    # Fast path: only the first (padded) dim is repeated, the rest are 1, and the
+    # input is contiguous -> out is R back-to-back flat copies of inp.
+    if (
+        rank >= 1
+        and all(s == 1 for s in sizes_shape[1:])
+        and inp.is_contiguous()
+        and out0.is_contiguous()
+    ):
+        R = sizes_shape[0]
+        numel = inp.numel()
+        if R >= 1 and numel > 0:
+            chunks = math.ceil(numel / _REPEAT_BLOCK)
+            grid = min(chunks, _REPEAT_GRID_CAP)
+            chunks_per_prog = math.ceil(chunks / grid) if grid > 0 else 1
+            with torch_device_fn.device(inp.device.index):
+                _repeat_flat_kernel[(grid,)](
+                    inp,
+                    out0,
+                    numel,
+                    R,
+                    BLOCK=_REPEAT_BLOCK,
+                    CHUNKS=chunks_per_prog,
+                )
+            return out0
 
     # split into outer dims (first rank-1) and the last dim
     outer_rank = rank - 1

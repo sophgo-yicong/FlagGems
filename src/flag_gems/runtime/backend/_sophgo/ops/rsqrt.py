@@ -16,7 +16,7 @@ def rsqrt_kernel_fast(x_ptr, out_ptr, n, BLOCK_SIZE: tl.constexpr, TPB: tl.const
     for t in range(TPB):
         offs = (pid + t * tl.num_programs(0)) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         x = tl.load(x_ptr + offs).to(tl.float32)
-        tl.store(out_ptr + offs, 1.0 / tl.sqrt(x))
+        tl.store(out_ptr + offs, tl.rsqrt(x))
 
 
 @triton.jit
@@ -26,7 +26,7 @@ def rsqrt_kernel_masked(x_ptr, out_ptr, n, BLOCK_SIZE: tl.constexpr, TPB: tl.con
         offs = (pid + t * tl.num_programs(0)) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         mask = offs < n
         x = tl.load(x_ptr + offs, mask=mask).to(tl.float32)
-        tl.store(out_ptr + offs, 1.0 / tl.sqrt(x), mask=mask)
+        tl.store(out_ptr + offs, tl.rsqrt(x), mask=mask)
 
 
 def _select_bs(n):

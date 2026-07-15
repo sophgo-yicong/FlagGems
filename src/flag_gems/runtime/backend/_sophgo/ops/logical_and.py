@@ -4,7 +4,6 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems.ops.logical_and import logical_and as _fallback_logical_and
 from flag_gems.runtime import device, torch_device_fn
 from flag_gems.utils import libentry, pointwise_dynamic
 from flag_gems.utils import triton_lang_extension as tle
@@ -62,6 +61,10 @@ def _logical_and_contig_kernel(
         if DIVISIBLE_N:
             a = tl.load(a_ptr + offsets)
             b = tl.load(b_ptr + offsets)
+            if a.dtype.is_floating():
+                a = tl.abs(a)
+            if b.dtype.is_floating():
+                b = tl.abs(b)
             if BOOL_INPUTS:
                 out = a.to(tl.int1).logical_and(b.to(tl.int1))
             else:
@@ -71,6 +74,10 @@ def _logical_and_contig_kernel(
             mask = offsets < n_elements
             a = tl.load(a_ptr + offsets, mask=mask, other=0)
             b = tl.load(b_ptr + offsets, mask=mask, other=0)
+            if a.dtype.is_floating():
+                a = tl.abs(a)
+            if b.dtype.is_floating():
+                b = tl.abs(b)
             if BOOL_INPUTS:
                 out = a.to(tl.int1).logical_and(b.to(tl.int1))
             else:
@@ -81,12 +88,33 @@ def _logical_and_contig_kernel(
 @pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")], config=_small_config)
 @triton.jit
 def _logical_and_func_small(x, y):
+    if x.dtype.is_floating():
+        x = tl.abs(x)
+    if y.dtype.is_floating():
+        y = tl.abs(y)
     return x.to(tl.int1).logical_and(y.to(tl.int1))
 
 
 @pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")], config=_large_config)
 @triton.jit
 def _logical_and_func_large(x, y):
+    if x.dtype.is_floating():
+        x = tl.abs(x)
+    if y.dtype.is_floating():
+        y = tl.abs(y)
+    return x.to(tl.int1).logical_and(y.to(tl.int1))
+
+
+# Small-tensor fallback using the default pointwise_dynamic config. Defined
+# locally (instead of importing the generic flag_gems.ops.logical_and) so this
+# backend is self-contained and still gets the -0.0 abs guard.
+@pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")])
+@triton.jit
+def _logical_and_func_fallback(x, y):
+    if x.dtype.is_floating():
+        x = tl.abs(x)
+    if y.dtype.is_floating():
+        y = tl.abs(y)
     return x.to(tl.int1).logical_and(y.to(tl.int1))
 
 
@@ -119,8 +147,17 @@ def _can_use_fast_path(a, b):
     )
 
 
-def _choose_block_size(n_elements):
-    return _SMALL_BLOCK_SIZE if n_elements <= _SMALL_BLOCK_SIZE else _LARGE_BLOCK_SIZE
+def _choose_block_size(n_elements, a, b):
+    if n_elements <= _SMALL_BLOCK_SIZE:
+        return _SMALL_BLOCK_SIZE
+    # Floats need the tl.abs -0.0 guard. In the masked (non-divisible) path the
+    # extra abs live value plus the mask overflows TPU local mem at 8192, so use
+    # the smaller tile for non-divisible float sizes. Int/bool keep 8192.
+    if (
+        a.is_floating_point() or b.is_floating_point()
+    ) and n_elements % _LARGE_BLOCK_SIZE != 0:
+        return _SMALL_BLOCK_SIZE
+    return _LARGE_BLOCK_SIZE
 
 
 def _launch_grid(n_elements, block_size):
@@ -133,7 +170,7 @@ def _launch_fast_path(a, b):
     if n_elements == 0:
         return out
 
-    block_size = _choose_block_size(n_elements)
+    block_size = _choose_block_size(n_elements, a, b)
     total_tiles = triton.cdiv(n_elements, block_size)
     grid_size = _launch_grid(n_elements, block_size)
     with torch_device_fn.device(a.device):
@@ -155,7 +192,7 @@ def logical_and(A, B):
     logger.debug("SOPHGO GEMS LOGICAL_AND")
     A, B = _move_to_same_device(A, B)
     if A.numel() <= _SMALL_BLOCK_SIZE:
-        return _fallback_logical_and(A, B)
+        return _logical_and_func_fallback(A, B)
     if _can_use_fast_path(A, B):
         return _launch_fast_path(A, B)
     return _logical_and_func_large(A, B)

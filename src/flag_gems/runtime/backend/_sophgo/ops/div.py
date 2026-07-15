@@ -6,16 +6,11 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems.ops.div import (
-    div_mode as _fallback_div_mode,
-    div_mode_ as _fallback_div_mode_,
-    floor_divide,
-    floor_divide_,
-    remainder,
-    remainder_,
-    true_divide as _fallback_true_divide,
-    true_divide_ as _fallback_true_divide_,
-)
+# from flag_gems.ops.div import floor_divide, floor_divide_, remainder, remainder_
+from flag_gems.ops.div import div_mode as _fallback_div_mode
+from flag_gems.ops.div import div_mode_ as _fallback_div_mode_
+from flag_gems.ops.div import true_divide as _fallback_true_divide
+from flag_gems.ops.div import true_divide_ as _fallback_true_divide_
 from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as tle
 
@@ -147,8 +142,15 @@ def _is_tpu_tensor(x):
     return isinstance(x, torch.Tensor) and x.device.type in ("tpu", "sophgo")
 
 
+_FAST_DIV_DTYPES = (torch.float32, torch.float16, torch.bfloat16)
+
+
 def _can_use_contiguous_float32_tensor(x):
-    return _is_tpu_tensor(x) and x.dtype is torch.float32 and x.is_contiguous()
+    # The benchmark runs FLOAT_DTYPES (fp16/fp32/bf16); the fast path used to
+    # gate on fp32 only, so 2/3 of the cases fell back to the generic op. The
+    # tt/ts/st kernels are just x/y (or x*inv_scalar), valid for any float
+    # dtype, so accept fp16/bf16 too.
+    return _is_tpu_tensor(x) and x.dtype in _FAST_DIV_DTYPES and x.is_contiguous()
 
 
 def _block_size(n_elements):
@@ -166,9 +168,7 @@ def _launch_tt(A, B, out):
     block_size = _block_size(n_elements)
     grid = _launch_grid(n_elements, block_size)
     if n_elements % block_size == 0:
-        _div_tt_contig_nomask_kernel[grid](
-            A, B, out, n_elements, BLOCK_SIZE=block_size
-        )
+        _div_tt_contig_nomask_kernel[grid](A, B, out, n_elements, BLOCK_SIZE=block_size)
     else:
         _div_tt_contig_kernel[grid](A, B, out, n_elements, BLOCK_SIZE=block_size)
     return out
@@ -187,9 +187,7 @@ def _launch_ts(A, B, out):
             A, inv_b, out, n_elements, BLOCK_SIZE=block_size
         )
     else:
-        _div_ts_contig_kernel[grid](
-            A, inv_b, out, n_elements, BLOCK_SIZE=block_size
-        )
+        _div_ts_contig_kernel[grid](A, inv_b, out, n_elements, BLOCK_SIZE=block_size)
     return out
 
 
@@ -204,9 +202,7 @@ def _launch_st(A, B, out):
             float(A), B, out, n_elements, BLOCK_SIZE=block_size
         )
     else:
-        _div_st_contig_kernel[grid](
-            float(A), B, out, n_elements, BLOCK_SIZE=block_size
-        )
+        _div_st_contig_kernel[grid](float(A), B, out, n_elements, BLOCK_SIZE=block_size)
     return out
 
 

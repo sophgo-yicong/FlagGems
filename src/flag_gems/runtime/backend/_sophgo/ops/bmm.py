@@ -8,13 +8,20 @@ from flag_gems.runtime import torch_device_fn
 from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as tle
 
-
 logger = logging.getLogger(__name__)
 
 
-def _select_bmm_tile(M: int, N: int, K: int):
+def _select_bmm_tile(dtype, M: int, N: int, K: int):
     # Keep the kernel shape space intentionally small on Sophgo.
-    # Start from the known-safe 32x32x32 config and only scale N for wider outputs.
+    if dtype == torch.float32:
+        # bf16x3 path holds many live vectors (a_hi/mid, b_hi/mid, d1..d3, acc),
+        # so big tiles overflow local mem — stay at the known-safe 32x32x32.
+        return 32, 32, 32, 4
+    # fp16/bf16 (DOT_PRECISION=none) only holds acc + a + b, so we can use a
+    # bigger tile on large square matrices for better tensor-core utilization
+    # (the old code used 32x32x32 even for 4096^2, which underutilizes the TC).
+    if M >= 64 and N >= 64:
+        return 64, 64, 64, 4
     if M <= 8 and N <= 64 and K <= 256:
         return 8, 32, 32, 4
     if M <= 32 and N <= 32:
@@ -102,7 +109,7 @@ def bmm(A, B):
     B = B.contiguous()
     out = torch.empty((batch, M, N), dtype=A.dtype, device=A.device)
 
-    tile_m, tile_n, tile_k, num_warps = _select_bmm_tile(M, N, K)
+    tile_m, tile_n, tile_k, num_warps = _select_bmm_tile(A.dtype, M, N, K)
     grid = (
         triton.cdiv(M, tile_m),
         triton.cdiv(N, tile_n),

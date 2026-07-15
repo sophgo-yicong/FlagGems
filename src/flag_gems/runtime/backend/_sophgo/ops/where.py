@@ -29,6 +29,66 @@ def where_inner(condition, self, other):
     return tl.where(condition, self, other)
 
 
+# ---- sophgo fast 1D path (all-tensor, same shape, contiguous) ----
+# where is a pure select (NO_OPMATH), so no dtype upcast: load c (bool)/a/b,
+# tl.where, store at result_type. Same flatten pattern as silu/abs: large tile
+# (4096/8192), grid capped to the 64 SMs with a TPB tile loop, no-mask fast
+# path when numel divides the tile. Only taken when c/a/b are already tensors
+# of the same contiguous shape with a bool condition and matching dtypes — the
+# general broadcasting/scalar/>4D path below is the fallback.
+_WHERE_MAX_GRID = 64
+
+
+@triton.jit
+def where_kernel_fast(
+    c_ptr, a_ptr, b_ptr, out_ptr, n, BLOCK_SIZE: tl.constexpr, TPB: tl.constexpr
+):
+    pid = tl.program_id(0)
+    for t in range(TPB):
+        offs = (pid + t * tl.num_programs(0)) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        c = tl.load(c_ptr + offs)
+        a = tl.load(a_ptr + offs)
+        b = tl.load(b_ptr + offs)
+        tl.store(out_ptr + offs, tl.where(c, a, b))
+
+
+@triton.jit
+def where_kernel_masked(
+    c_ptr, a_ptr, b_ptr, out_ptr, n, BLOCK_SIZE: tl.constexpr, TPB: tl.constexpr
+):
+    pid = tl.program_id(0)
+    for t in range(TPB):
+        offs = (pid + t * tl.num_programs(0)) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offs < n
+        c = tl.load(c_ptr + offs, mask=mask, other=0)
+        a = tl.load(a_ptr + offs, mask=mask, other=0.0)
+        b = tl.load(b_ptr + offs, mask=mask, other=0.0)
+        tl.store(out_ptr + offs, tl.where(c, a, b), mask=mask)
+
+
+def _where_select_bs(n):
+    if n <= 4096:
+        return 4096
+    return 8192
+
+
+def _where_dispatch(n):
+    bs = _where_select_bs(n)
+    num_tiles = math.ceil(n / bs)
+    grid = min(num_tiles, _WHERE_MAX_GRID)
+    tpb = math.ceil(num_tiles / grid)
+    return bs, grid, tpb
+
+
+def _where_fast(c, a, b, out):
+    n = c.numel()
+    bs, grid, tpb = _where_dispatch(n)
+    if n % bs == 0:
+        where_kernel_fast[(grid,)](c, a, b, out, n, BLOCK_SIZE=bs, TPB=tpb)
+    else:
+        where_kernel_masked[(grid,)](c, a, b, out, n, BLOCK_SIZE=bs, TPB=tpb)
+
+
 def where_self_out(condition, self, other, out=None):
     logger.debug("GEMS WHERE_SELF_OUT")
     result_type = torch.result_type(self, other)
@@ -36,6 +96,34 @@ def where_self_out(condition, self, other, out=None):
         assert (
             out.dtype == result_type
         ), f"Expected out type to be {result_type}, but got {out.dtype}."
+
+    # Fast path: all three are same-shape contiguous tensors, bool condition,
+    # matching dtypes/devices — no broadcasting, no cast, no >4D merge.
+    if (
+        isinstance(condition, torch.Tensor)
+        and isinstance(self, torch.Tensor)
+        and isinstance(other, torch.Tensor)
+        and condition.dtype == torch.bool
+        and self.dtype == other.dtype
+        and condition.shape == self.shape == other.shape
+        and condition.is_contiguous()
+        and self.is_contiguous()
+        and other.is_contiguous()
+        and self.device == other.device
+        and condition.device == self.device
+        and (
+            out is None
+            or (
+                out.shape == condition.shape
+                and out.is_contiguous()
+                and out.dtype == result_type
+            )
+        )
+    ):
+        if out is None:
+            out = torch.empty(condition.shape, dtype=result_type, device=self.device)
+        _where_fast(condition, self, other, out)
+        return out
 
     c, a, b = list(
         map(
