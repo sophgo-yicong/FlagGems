@@ -77,7 +77,6 @@ from .softmax import softmax
 from .stack import stack
 from .sum import sum, sum_dim, sum_dim_out, sum_out
 from .tanh import tanh, tanh_
-from .tile import tile
 from .uniform import uniform_
 from .unique import _unique2
 from .upsample_nearest2d import upsample_nearest2d
@@ -187,7 +186,6 @@ __all__ = [
     "sum_out",
     "tanh",
     "tanh_",
-    "tile",
     "uniform_",
     "upsample_nearest2d",
     "_unique2",
