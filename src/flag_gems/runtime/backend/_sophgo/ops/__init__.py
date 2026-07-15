@@ -132,6 +132,7 @@ from .stack import stack
 from .sub import sub, sub_
 from .sum import sum, sum_dim, sum_dim_out, sum_out
 from .tanh import tanh, tanh_
+from .tile import tile
 from .triu import triu
 from .uniform import uniform_
 from .unique import _unique2
@@ -317,6 +318,7 @@ __all__ = [
     "sum_out",
     "tanh",
     "tanh_",
+    "tile",
     "triu",
     "uniform_",
     "_unique2",
