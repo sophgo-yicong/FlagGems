@@ -34,16 +34,7 @@ from .cumsum import cumsum, normed_cumsum
 from .diag import diag
 from .diag_embed import diag_embed
 from .diagonal import diagonal
-from .div import (
-    div_mode,
-    div_mode_,
-    floor_divide,
-    floor_divide_,
-    remainder,
-    remainder_,
-    true_divide,
-    true_divide_,
-)
+from .div import div_mode, div_mode_, true_divide, true_divide_
 from .dot import dot
 from .dropout import dropout, native_dropout
 from .embedding import embedding, embedding_backward
@@ -55,6 +46,7 @@ from .fill import fill_scalar, fill_scalar_, fill_tensor, fill_tensor_
 from .flip import flip
 from .full import full
 from .full_like import full_like
+from .gather import gather
 from .ge import ge, ge_scalar
 from .gelu import gelu, gelu_
 from .groupnorm import group_norm
@@ -207,6 +199,7 @@ __all__ = [
     "fill_tensor_",
     "flip",
     "full",
+    "gather",
     "gelu",
     "gelu_",
     "ge",
@@ -338,10 +331,6 @@ __all__ = [
     "zeros_like",
     "div_mode",
     "div_mode_",
-    "floor_divide",
-    "floor_divide_",
-    "remainder",
-    "remainder_",
     "true_divide",
     "true_divide_",
 ]

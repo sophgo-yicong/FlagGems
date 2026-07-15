@@ -5,7 +5,6 @@ import torch
 import triton
 import triton.language as tl
 
-from flag_gems.ops.logical_or import logical_or as _fallback_logical_or
 from flag_gems.runtime import device, torch_device_fn
 from flag_gems.utils import libentry, pointwise_dynamic
 from flag_gems.utils import triton_lang_extension as tle
@@ -68,6 +67,10 @@ def _logical_or_contig_masked_kernel(
         mask = offsets < n_elements
         a = tl.load(a_ptr + offsets, mask=mask, other=0)
         b = tl.load(b_ptr + offsets, mask=mask, other=0)
+        if a.dtype.is_floating():
+            a = tl.abs(a)
+        if b.dtype.is_floating():
+            b = tl.abs(b)
         if BOOL_INPUTS:
             out = a.to(tl.int1).logical_or(b.to(tl.int1))
         else:
@@ -94,6 +97,10 @@ def _logical_or_contig_nomask_kernel(
         offsets = tile_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
         a = tl.load(a_ptr + offsets)
         b = tl.load(b_ptr + offsets)
+        if a.dtype.is_floating():
+            a = tl.abs(a)
+        if b.dtype.is_floating():
+            b = tl.abs(b)
         if BOOL_INPUTS:
             out = a.to(tl.int1).logical_or(b.to(tl.int1))
         else:
@@ -101,19 +108,23 @@ def _logical_or_contig_nomask_kernel(
         tl.store(out_ptr + offsets, out)
 
 
-@pointwise_dynamic(
-    promotion_methods=[(0, 1, "ALWAYS_BOOL")], config=_small_config
-)
+@pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")], config=_small_config)
 @triton.jit
 def _logical_or_func_small(x, y):
+    if x.dtype.is_floating():
+        x = tl.abs(x)
+    if y.dtype.is_floating():
+        y = tl.abs(y)
     return x.to(tl.int1).logical_or(y.to(tl.int1))
 
 
-@pointwise_dynamic(
-    promotion_methods=[(0, 1, "ALWAYS_BOOL")], config=_large_config
-)
+@pointwise_dynamic(promotion_methods=[(0, 1, "ALWAYS_BOOL")], config=_large_config)
 @triton.jit
 def _logical_or_func_large(x, y):
+    if x.dtype.is_floating():
+        x = tl.abs(x)
+    if y.dtype.is_floating():
+        y = tl.abs(y)
     return x.to(tl.int1).logical_or(y.to(tl.int1))
 
 
@@ -142,10 +153,17 @@ def _can_use_fast_path(a, b):
     )
 
 
-def _choose_block_size(n_elements):
-    # 4K is sufficient for short tensors; 8K amortizes per-tile overhead for
-    # the inference tensors that dominate this operator's use.
-    return _SMALL_BLOCK_SIZE if n_elements <= _SMALL_BLOCK_SIZE else _LARGE_BLOCK_SIZE
+def _choose_block_size(n_elements, a, b):
+    if n_elements <= _SMALL_BLOCK_SIZE:
+        return _SMALL_BLOCK_SIZE
+    # Floats need the tl.abs -0.0 guard. In the masked (non-divisible) path the
+    # extra abs live value plus the mask overflows TPU local mem at 8192, so use
+    # the smaller tile for non-divisible float sizes. Int/bool keep 8192.
+    if (
+        a.is_floating_point() or b.is_floating_point()
+    ) and n_elements % _LARGE_BLOCK_SIZE != 0:
+        return _SMALL_BLOCK_SIZE
+    return _LARGE_BLOCK_SIZE
 
 
 def _launch_grid(n_elements, block_size):
@@ -158,7 +176,7 @@ def _launch_fast_path(a, b):
     if n_elements == 0:
         return out
 
-    block_size = _choose_block_size(n_elements)
+    block_size = _choose_block_size(n_elements, a, b)
     total_tiles = triton.cdiv(n_elements, block_size)
     grid_size = _launch_grid(n_elements, block_size)
     kernel = (

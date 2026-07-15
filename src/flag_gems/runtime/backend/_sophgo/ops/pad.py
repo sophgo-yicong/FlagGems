@@ -1,14 +1,114 @@
 import importlib
 import logging
+import math
 import os
 from typing import Any, Callable, List, Mapping, Tuple
 
 import torch
+import triton
+import triton.language as tl
 
+from flag_gems.runtime import torch_device_fn
+from flag_gems.utils import libentry
+from flag_gems.utils import triton_lang_extension as tle
 from flag_gems.utils.code_cache import code_cache_dir
 from flag_gems.utils.code_utils import IndentedBuffer, write_atomic
 
 logger = logging.getLogger(__name__)
+
+# sophgo constant-pad fast path for rank-1 / rank-2 contiguous inputs.
+# Fuses the fill (borders = value) and the interior copy (inp -> out slab) into
+# a single rowwise launch: each program handles whole out-rows, storing `value`
+# to the full row then overwriting the interior segment from inp. No integer
+# divmod; rank-3+ with padding on inner leading dims falls back to the codegen
+# kernel (the multi-dim border test there would need divmod).
+_PAD_GRID_CAP = 64
+_PAD_BLOCK_N = 4096
+
+
+@libentry()
+@triton.jit
+def _pad_const_2d_kernel(
+    inp_ptr,
+    out_ptr,
+    M,  # inp row count (1 for rank-1)
+    N,  # inp last-dim size
+    Mo,  # out row count
+    No,  # out last-dim size
+    p0l,  # row left pad (0 for rank-1)
+    p1l,  # col left pad
+    value,
+    BLOCK_N: tl.constexpr,
+    ROWS_PER_PROG,
+):
+    pid = tle.program_id(0)
+    nprog = tle.num_programs(0)
+    col = tl.arange(0, BLOCK_N)
+    for t in range(ROWS_PER_PROG):
+        r = pid + t * nprog
+        if r < Mo:
+            out_row_base = r * No
+            # 1. fill the whole out row with the constant value
+            for c0 in range(0, No, BLOCK_N):
+                cols = c0 + col
+                m = cols < No
+                tl.store(out_ptr + out_row_base + cols, value, mask=m)
+            # 2. overwrite the interior segment from inp (only interior rows)
+            if p0l <= r and r < p0l + M:
+                ir = r - p0l
+                inp_row_base = ir * N
+                for c1 in range(0, N, BLOCK_N):
+                    cols = c1 + col
+                    m = cols < N
+                    tl.store(
+                        out_ptr + out_row_base + p1l + cols,
+                        tl.load(inp_ptr + inp_row_base + cols, mask=m, other=0),
+                        mask=m,
+                    )
+
+
+def _pad_const_2d_fast(inp, pad, value, ndim):
+    # pad layout (pytorch F.pad): [d_last_left, d_last_right, ..., d_first_left, d_first_right]
+    N = inp.shape[-1]
+    p1l, p1r = pad[0], pad[1]
+    if ndim == 1:
+        M, p0l, p0r = 1, 0, 0
+    else:
+        M = inp.shape[0]
+        p0l, p0r = pad[2], pad[3]
+    No = N + p1l + p1r
+    Mo = M + p0l + p0r
+    out_shape = (inp.shape[0] + p0l + p0r, No) if ndim == 2 else (No,)
+    out = torch.empty(out_shape, dtype=inp.dtype, device=inp.device)
+    grid = min(Mo, _PAD_GRID_CAP) if Mo > 0 else 1
+    rows_per_prog = math.ceil(Mo / grid) if grid > 0 else 1
+    with torch_device_fn.device(out.device):
+        _pad_const_2d_kernel[(grid,)](
+            inp,
+            out,
+            M,
+            N,
+            Mo,
+            No,
+            p0l,
+            p1l,
+            value,
+            BLOCK_N=_PAD_BLOCK_N,
+            ROWS_PER_PROG=rows_per_prog,
+        )
+    return out
+
+
+def _can_pad_const_fast(self, pad, mode, ndim):
+    if mode != "constant":
+        return False
+    if not self.is_contiguous():
+        return False
+    if ndim == 1:
+        return len(pad) == 2 and all(p >= 0 for p in pad)
+    if ndim == 2:
+        return len(pad) == 4 and all(p >= 0 for p in pad)
+    return False
 
 
 # --------------------------- padding wrapper genration -----------------------------------
@@ -454,6 +554,9 @@ def pad(self, pad, mode="constant", value=None):
 
     if value is None:
         value = 0.0
+
+    if _can_pad_const_fast(self, pad, mode, ndim):
+        return _pad_const_2d_fast(self, pad, float(value), ndim)
 
     if mode == "reflect":
         ndim //= 2
