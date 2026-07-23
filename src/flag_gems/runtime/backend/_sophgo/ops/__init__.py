@@ -1,4 +1,8 @@
 from .addmm import addmm
+from .attention import scaled_dot_product_attention
+from .llama_mlp import llama_mlp_gate_up
+from .rope import apply_rotary_emb, fused_rope_scatter_k
+from .gather_kv import gather_kv_paged
 from .all import all, all_dim, all_dims
 from .any import any, any_dim, any_dims
 from .arange import arange, arange_start
@@ -88,6 +92,11 @@ from .where import where_scalar_other, where_scalar_self, where_self, where_self
 
 __all__ = [
     "addmm",
+    "scaled_dot_product_attention",
+    "llama_mlp_gate_up",
+    "apply_rotary_emb",
+    "fused_rope_scatter_k",
+    "gather_kv_paged",
     "all",
     "all_dim",
     "all_dims",

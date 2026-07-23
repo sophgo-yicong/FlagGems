@@ -138,14 +138,46 @@ def mm(a, b):
     M, K = a.shape
     _, N = b.shape
     c_dtype = get_higher_dtype(a.dtype, b.dtype)
-    # For M=1 or N=1, PPL AddressAssign may fail due to compile-time tensor
-    # sizes outscaling the actual data. Use broadcast-mul-reduce instead.
-    if M == 1:
-        c = (a.view(1, K, 1) * b.unsqueeze(0)).sum(dim=1)
-        return c
-    elif N == 1:
-        c = (a.view(M, K) * b.view(1, K)).sum(dim=1, keepdim=True)
-        return c
+    # For M=1 (decode), the raw PPL matmul kernel reads out-of-bounds rows
+    # (offs_am = [0..BLOCK_M-1] while only row 0 is valid); the masked loads
+    # still emit DMA for the OOB addresses and PPL AddressAssign mis-handles
+    # the degenerate M=1 tile, producing NaN.  Zero-pad A up to BLOCK_M rows so
+    # every offs_am row maps to a real (zero) row, run the PPL kernel, then
+    # slice row 0.  This keeps the whole GEMV on the TPU (no CPU / no torch
+    # broadcast-reduce, which corrupts on CMODEL after a preceding PPL kernel).
+    if M == 1 or N == 1:
+        BLOCK_M = 64
+        BLOCK_N = 64
+        a_pad = torch.zeros((BLOCK_M, K), device=device, dtype=a.dtype)
+        a_pad[0:M] = a
+        N_pad = N
+        b_use = b
+        if N == 1:
+            b_use = torch.zeros((K, BLOCK_N), device=device, dtype=b.dtype)
+            b_use[:, 0:N] = b
+            N_pad = BLOCK_N
+        c_pad = torch.empty((BLOCK_M, N_pad), device=device, dtype=c_dtype)
+        dot_out_dtype = tl.float32
+        # fp32 inputs take the bf16x3 high-precision split path, same as below.
+        if a.dtype == torch.float32 or b.dtype == torch.float32:
+            dot_precision = "bf16x3"
+        else:
+            dot_precision = "none"
+        grid = lambda META: (
+            triton.cdiv(BLOCK_M, META["BLOCK_M"]),
+            triton.cdiv(N_pad, META["BLOCK_N"]),
+        )
+        with torch_device_fn.device(a.device):
+            matmul_kernel[grid](
+                a_pad, b_use, c_pad,
+                BLOCK_M, N_pad, K,
+                a_pad.stride(0), a_pad.stride(1),
+                b_use.stride(0), b_use.stride(1),
+                c_pad.stride(0), c_pad.stride(1),
+                dot_out_dtype=dot_out_dtype,
+                DOT_PRECISION=dot_precision,
+            )
+        return c_pad[0:M, 0:N].contiguous()
     c = torch.empty((M, N), device=device, dtype=c_dtype)
     dot_out_dtype = tl.float32
     # fp32 输入走 f32 拆分 → 多次 bf16 点积的高精度路径（移植自 f32dot.py）。

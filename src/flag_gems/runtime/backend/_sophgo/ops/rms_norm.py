@@ -67,7 +67,13 @@ class RmsNorm(torch.autograd.Function):
         M = math.prod(x.shape[:dim])
         N = math.prod(normalized_shape)
 
-        BLOCK_SIZE = min(triton.next_power_of_2(N), 256)
+        # Always use the full TPU vector width (256) so that the cross-lane
+        # reduction tl.sum(x * x) inside the kernel operates on complete
+        # 256-element vectors.  Sub-vector-width BLOCK_SIZE (e.g. 128 for
+        # N=128) produces incorrect partial-lane reductions on the TPU
+        # hardware, which corrupts the variance estimate and the final
+        # output.  Masking ensures elements beyond N are ignored.
+        BLOCK_SIZE = 256
         x = x.contiguous()
         weight = weight.contiguous()
         y = torch.empty_like(x)
