@@ -1,5 +1,4 @@
 import logging
-import math
 
 import torch
 import triton
@@ -11,6 +10,26 @@ from flag_gems.utils import libentry
 from flag_gems.utils import triton_lang_extension as tle
 
 from ..utils.shape_utils import dim_compress
+
+
+_FULL_REDUCTION_MAX_GRID = 64
+_FULL_REDUCTION_MIN_BLOCK = 1024
+_FULL_REDUCTION_MAX_BLOCK = 4096
+_FULL_REDUCTION_TARGET_TILES_PER_PROGRAM = 4
+
+
+def _count_nonzero_block_size(numel):
+    if numel <= _FULL_REDUCTION_MAX_BLOCK:
+        return triton.next_power_of_2(numel)
+
+    target_block = triton.cdiv(
+        numel,
+        _FULL_REDUCTION_MAX_GRID * _FULL_REDUCTION_TARGET_TILES_PER_PROGRAM,
+    )
+    return max(
+        _FULL_REDUCTION_MIN_BLOCK,
+        min(_FULL_REDUCTION_MAX_BLOCK, triton.next_power_of_2(target_block)),
+    )
 
 
 def count_nonzero_dim1_block_m(M):
@@ -47,35 +66,33 @@ def count_nonzero_dim0_block_n(N):
 
 @libentry()
 @triton.jit
-def count_nonzero_kernel_1(x_ptr, mid_ptr, numel, BLOCK_SIZE: tl.constexpr):
-    pid = tl.program_id(0)
-    offset = pid * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
-    mask = offset < numel
+def count_nonzero_kernel_1(
+    x_ptr,
+    mid_ptr,
+    numel,
+    BLOCK_SIZE: tl.constexpr,
+    TILES_PER_PROGRAM: tl.constexpr,
+):
+    pid = tle.program_id(0)
+    num_programs = tle.num_programs(0)
+    counts = tl.zeros([BLOCK_SIZE], dtype=tl.float32)
 
-    x = tl.load(x_ptr + offset, mask=mask, other=0)
-    if x.dtype.is_floating():
-        x = tl.abs(x)
-    is_nonzero = (x != 0).to(tl.float32)
+    for tile_offset in range(TILES_PER_PROGRAM):
+        tile_id = pid + tile_offset * num_programs
+        offset = tile_id * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
+        mask = offset < numel
+        x = tl.load(x_ptr + offset, mask=mask, other=0)
+        counts += ((x != 0) & mask).to(tl.float32)
 
-    local_count = tl.sum(is_nonzero[None, :], axis=1)
-    store_offset = tl.arange(0, 1)
-    tl.store(mid_ptr + pid + store_offset, local_count, mask=store_offset < 1)
+    tl.store(mid_ptr + pid, tl.sum(counts, axis=0).to(tl.int32))
 
 
 @libentry()
 @triton.jit
 def count_nonzero_kernel_2(mid_ptr, out_ptr, mid_size, BLOCK_MID: tl.constexpr):
-    total = tl.zeros([1], dtype=tl.int32)
-
-    for i in range(0, mid_size, BLOCK_MID):
-        offset = i + tl.arange(0, BLOCK_MID)
-        mask = offset < mid_size
-        mid_val = tl.load(mid_ptr + offset, mask=mask, other=0.0)
-        chunk_sum = tl.sum(mid_val[None, :], axis=1)
-        total = total + chunk_sum.to(tl.int32)
-
-    store_offset = tl.arange(0, 1)
-    tl.store(out_ptr + store_offset, total, mask=store_offset < 1)
+    offset = tl.arange(0, BLOCK_MID)
+    mid_val = tl.load(mid_ptr + offset, mask=offset < mid_size, other=0)
+    tl.store(out_ptr, tl.sum(mid_val.to(tl.float32), axis=0).to(tl.int32))
 
 
 @libentry()
@@ -227,18 +244,35 @@ def count_nonzero(x, dim=None):
     if numel == 0:
         return torch.tensor(0, dtype=torch.int32, device=x.device)
 
-    block_size = triton.next_power_of_2(math.ceil(math.sqrt(numel)))
-    mid_size = triton.cdiv(numel, block_size)
-
-    max_safe_mid = max(1, (2**24 - 1) // block_size)
-    raw_mid = min(mid_size, max_safe_mid)
-    block_mid = 1 << (raw_mid.bit_length() - 1)
-
-    mid = torch.empty((mid_size,), dtype=torch.float32, device=x.device)
+    block_size = _count_nonzero_block_size(numel)
+    num_tiles = triton.cdiv(numel, block_size)
+    grid = min(num_tiles, _FULL_REDUCTION_MAX_GRID)
+    tiles_per_program = triton.cdiv(num_tiles, grid)
     out = torch.empty([], dtype=torch.int32, device=x.device)
 
     with torch_device_fn.device(x.device):
-        count_nonzero_kernel_1[(mid_size, 1, 1)](x, mid, numel, block_size)
-        count_nonzero_kernel_2[(1, 1, 1)](mid, out, mid_size, block_mid)
+        if grid == 1:
+            count_nonzero_kernel_1[(1, 1, 1)](
+                x,
+                out,
+                numel,
+                BLOCK_SIZE=block_size,
+                TILES_PER_PROGRAM=tiles_per_program,
+            )
+        else:
+            mid = torch.empty((grid,), dtype=torch.int32, device=x.device)
+            count_nonzero_kernel_1[(grid, 1, 1)](
+                x,
+                mid,
+                numel,
+                BLOCK_SIZE=block_size,
+                TILES_PER_PROGRAM=tiles_per_program,
+            )
+            count_nonzero_kernel_2[(1, 1, 1)](
+                mid,
+                out,
+                grid,
+                BLOCK_MID=triton.next_power_of_2(grid),
+            )
 
     return out
